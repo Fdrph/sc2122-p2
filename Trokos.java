@@ -1,4 +1,6 @@
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.ConnectException;
@@ -8,6 +10,11 @@ import java.nio.file.Paths;
 import java.util.Base64;
 import java.util.NoSuchElementException;
 import java.util.Scanner;
+import java.security.cert.Certificate;
+import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.Signature;
+import java.security.SignedObject;
 
 import javax.net.SocketFactory;
 import javax.net.ssl.SSLSocket;
@@ -16,20 +23,30 @@ import javax.net.ssl.SSLSocketFactory;
 public class Trokos {
 
     public static void main(String[] args) {
-        if (args.length != 3) {
-            System.out.println("Please provide <serverIP:port> <userID> <password> as arguments");
+        if (args.length != 5) {
+            System.out.println("Please provide <serverIP:port> <truststore> <keystore> " +
+            "<password-keystore> <userID> as arguments");
+            System.exit(0);
         }
 
         String ip = args[0].split(":")[0];
         String port = args[0].split(":").length > 1 ? args[0].split(":")[1] : "45678";
-        String trustStore = args[1];
-        String keyStore = args[2];
+        String trustStorePath = args[1];
+        String keyStorePath = args[2];
         String pass_keyStore = args[3];
         String userID = args[4];
 
-        System.setProperty("javax.net.ssl.trustStore", trustStore);
+        System.setProperty("javax.net.ssl.trustStore", trustStorePath);
 
         try {
+            // Load keystore, cert and keys
+            InputStream keyStoreData = new FileInputStream(keyStorePath);
+            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+            ks.load(keyStoreData, pass_keyStore.toCharArray());
+            Certificate cert = ks.getCertificate("trokosclient");
+            PrivateKey pk = (PrivateKey) ks.getKey("trokosclient", pass_keyStore.toCharArray());
+
+            // Establish connection
             SocketFactory sf = SSLSocketFactory.getDefault();
             SSLSocket serverCon = (SSLSocket) sf.createSocket(ip, Integer.parseInt(port));
             Scanner scan = new Scanner(System.in);
@@ -42,17 +59,27 @@ public class Trokos {
             // Attempt authentication with server
             System.out.println("Attempting to authenticate with server...");
             outStream.writeObject(userID);
-            outStream.writeObject(pass_keyStore);
 
-            // Response
-            String response = (String)inStream.readObject();
-            if (response.split(":")[0].equals("Failure")) {
-                System.out.println("Wrong Password!");
-                serverCon.close();
-                System.exit(0);
+            Long nonce = (Long) inStream.readObject();
+            Boolean userExists = (Boolean) inStream.readObject();
+
+            SignedObject signedNonce = new SignedObject(nonce, pk, Signature.getInstance("SHA256withRSA"));
+            if (!userExists) {
+                outStream.writeObject(cert);
+            } 
+            outStream.writeObject(signedNonce);
+
+            // Server response
+            String response = (String) inStream.readObject();
+            String[] s = response.split(":");
+            if (s[0].equals("FAILURE")) {
+                System.out.println(s[1]);
+                System.exit(-1);
             } else {
-                System.out.println(response);
+                System.out.println(s[1]);
             }
+
+
 
             // Main commands loop
             showCommands();

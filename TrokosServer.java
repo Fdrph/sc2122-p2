@@ -2,14 +2,21 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.Signature;
+import java.security.SignedObject;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
+import java.util.Random;
 import java.util.UUID;
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.ObjectInputStream;
@@ -19,6 +26,7 @@ import java.net.Socket;
 import javax.net.ServerSocketFactory;
 import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLServerSocketFactory;
+
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.MultiFormatWriter;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
@@ -102,31 +110,70 @@ public class TrokosServer {
                 ObjectOutputStream outStream = new ObjectOutputStream(clientCon.getOutputStream());
                 ObjectInputStream inStream = new ObjectInputStream(clientCon.getInputStream());
 
-                String user = (String)inStream.readObject();
-                String passwd = (String)inStream.readObject();
-             
-                // Authenticate the user and create user account if needed
-                Path p = Paths.get("db/UserData.txt");
-                Boolean passwdFound = Files.lines(p).anyMatch(l -> l.equals(user + ":" + passwd));
-                if (!auxUserExists(user)) {
-                    PrintWriter writer = new PrintWriter(new FileWriter("db/UserData.txt",true));
-                    writer.println(user + ":" + passwd);
-                    writer.close();
 
+                // Authenticate the user and create user account if needed
+                String userID = (String)inStream.readObject();
+                Long nonce = new Random().nextLong();
+                outStream.writeObject(nonce);
+                
+                if (!auxUserExists(userID)) {
+                    outStream.writeObject(false);
+
+                    Certificate clientCert = (Certificate) inStream.readObject();
+                    SignedObject signedNonce = (SignedObject) inStream.readObject();
+
+                    Long received = (Long) signedNonce.getObject();
+                    Signature s = Signature.getInstance("SHA256withRSA");
+                    Boolean sign_matches = signedNonce.verify(clientCert.getPublicKey(), s);
+                    
+                    if (!nonce.equals(received) || !sign_matches) {
+                        outStream.writeObject("FAILURE:Couldn't create new user, signature verification failed!");
+                        clientCon.close();
+                        System.out.println("Client Disconnected: " + clientHost);
+                        return;
+                    }
+
+                    FileOutputStream fo = new FileOutputStream("db/"+userID+".cert");
+                    fo.write(clientCert.getEncoded());
+                    fo.close();
+
+                    PrintWriter writer = new PrintWriter(new FileWriter("db/UserData.txt",true));
+                    writer.println(userID + ":" + userID+".cert");
+                    writer.close();
                     PrintWriter balWriter = new PrintWriter(new FileWriter("db/UserAccounts.txt",true));
-                    balWriter.println(user + ":" + "100.0");
+                    balWriter.println(userID + ":" + "100.0");
                     balWriter.close();
 
-                    outStream.writeObject("Success:New user created!");
-                } else if (passwdFound) {
-                    outStream.writeObject("Success:User authenticated!");
+                    outStream.writeObject("SUCCESS:New user created!");
                 } else {
-                    outStream.writeObject("Failure:Wrong password!");
-                    clientCon.close();
-                    System.out.println("Client Disconnected:" + clientHost);
-                    return;
+                    outStream.writeObject(true);
+
+                    SignedObject signedNonce = (SignedObject) inStream.readObject();
+
+                    String userdata = Files.lines(Paths.get("db/UserData.txt"))
+                        .filter(l -> l.split(":")[0]
+                        .equals(userID))
+                        .findFirst().orElse("");
+                    String certName = userdata.split(":")[1];
+
+                    FileInputStream cis = new FileInputStream("db/"+certName);
+                    CertificateFactory cf = CertificateFactory.getInstance("X509");
+                    Certificate userCert = cf.generateCertificate(cis);
+
+                    Signature s = Signature.getInstance("SHA256withRSA");
+                    Boolean sign_matches = signedNonce.verify(userCert.getPublicKey(), s);
+                    if (!sign_matches) {
+                        outStream.writeObject("FAILURE:Couldn't authenticate, signature verification failed!");
+                        clientCon.close();
+                        System.out.println("Client Disconnected: " + clientHost);
+                        return;
+                    }
+
+                    outStream.writeObject("SUCCESS:User authenticated!");
                 }
 
+
+                
                 // Listen for commands from client
                 while(true) {
                     String[] command = (String[])inStream.readObject();
@@ -135,66 +182,66 @@ public class TrokosServer {
                     switch (command[0]){
                         case "b":
                         case "balance":
-                            r = getBalance(user);
+                            r = getBalance(userID);
                             outStream.writeObject(r);
                             break;
                         case "m":
                         case "makepayment":
-                            r = makePayment(user, command);
+                            r = makePayment(userID, command);
                             outStream.writeObject(r);
                             break;
                         case "r":
                         case "requestpayment":
-                            r = requestPayment(user, command);
+                            r = requestPayment(userID, command);
                             outStream.writeObject(r);
                             break;
                         case "v":
                         case "viewrequests":
-                            r = viewRequests(user, command);
+                            r = viewRequests(userID, command);
                             outStream.writeObject(r);
                             break;
                         case "p":
                         case "payrequest":
-                            r = payRequest(user, command);
+                            r = payRequest(userID, command);
                             outStream.writeObject(r);
                             break;
                         case "n":
                         case "newgroup":
-                            r = newGroup(user, command);
+                            r = newGroup(userID, command);
                             outStream.writeObject(r);
                             break;
                         case "a":
                         case "addu":
-                            r = addUser(user, command);
+                            r = addUser(userID, command);
                             outStream.writeObject(r);
                             break;
                         case "g":
                         case "groups":
-                            r = viewGroups(user, command);
+                            r = viewGroups(userID, command);
                             outStream.writeObject(r);
                             break;
                         case "d":
                         case "dividepayment":
-                            r = dividePayment(user, command);
+                            r = dividePayment(userID, command);
                             outStream.writeObject(r);
                             break;
                         case "s":
                         case "statuspayments":
-                            r = statusPayments(user, command);
+                            r = statusPayments(userID, command);
                             outStream.writeObject(r);
                             break;
                         case "h":
                         case "history":
-                            r = historyGroup(user, command);
+                            r = historyGroup(userID, command);
                             outStream.writeObject(r);
                             break;
                         case "o":
                         case "obtainQRcode":
-                            obtainQRcode(user, command, outStream); 
+                            obtainQRcode(userID, command, outStream); 
                             break;
                         case "c":
                         case "confirmQRcode":
-                            r = confirmQRcode(user, command);
+                            r = confirmQRcode(userID, command);
                             outStream.writeObject(r);
                             break;
                         default:
