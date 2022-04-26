@@ -22,10 +22,12 @@ public class Trokos {
 
         String ip = args[0].split(":")[0];
         String port = args[0].split(":").length > 1 ? args[0].split(":")[1] : "45678";
-        String userID = args[1];
-        String password = args[2];
+        String trustStore = args[1];
+        String keyStore = args[2];
+        String pass_keyStore = args[3];
+        String userID = args[4];
 
-        System.setProperty("javax.net.ssl.trustStore", "ssl/truststore.client");
+        System.setProperty("javax.net.ssl.trustStore", trustStore);
 
         try {
             SocketFactory sf = SSLSocketFactory.getDefault();
@@ -40,7 +42,7 @@ public class Trokos {
             // Attempt authentication with server
             System.out.println("Attempting to authenticate with server...");
             outStream.writeObject(userID);
-            outStream.writeObject(password);
+            outStream.writeObject(pass_keyStore);
 
             // Response
             String response = (String)inStream.readObject();

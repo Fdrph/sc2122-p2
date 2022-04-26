@@ -28,10 +28,18 @@ public class TrokosServer {
 
     public static void main(String[] args) {
         int serverPort = 45678;
-        if (args.length > 0) { serverPort = Integer.parseInt(args[0]); }
+        if (args.length < 3) {System.out.println("Missing launch arguments");}
+        if (args.length == 4) { 
+            serverPort = Integer.parseInt(args[0]);
+            args = Arrays.copyOfRange(args, 1, args.length);
+        }
+
+        String cipher_pass = args[0];
+        String keystore = args[1];
+        String pass_keystore = args[2];
         
-        System.setProperty("javax.net.ssl.keyStore", "ssl/keystore.server");
-        System.setProperty("javax.net.ssl.keyStorePassword", "sc2122-trokos");
+        System.setProperty("javax.net.ssl.keyStore", keystore);
+        System.setProperty("javax.net.ssl.keyStorePassword", pass_keystore);
         TrokosServer server = new TrokosServer();
 
         try {
