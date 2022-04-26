@@ -2,13 +2,16 @@ import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.net.ConnectException;
-import java.net.Socket;
 import java.net.SocketException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.Base64;
 import java.util.NoSuchElementException;
 import java.util.Scanner;
+
+import javax.net.SocketFactory;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 
 public class Trokos {
 
@@ -22,15 +25,16 @@ public class Trokos {
         String userID = args[1];
         String password = args[2];
 
-        Socket serverCon;
+        System.setProperty("javax.net.ssl.trustStore", "ssl/truststore.client");
 
         try {
-            serverCon = new Socket(ip, Integer.parseInt(port));
+            SocketFactory sf = SSLSocketFactory.getDefault();
+            SSLSocket serverCon = (SSLSocket) sf.createSocket(ip, Integer.parseInt(port));
             Scanner scan = new Scanner(System.in);
             ObjectOutputStream outStream = new ObjectOutputStream(serverCon.getOutputStream());
             ObjectInputStream inStream = new ObjectInputStream(serverCon.getInputStream());
             Runtime.getRuntime().addShutdownHook(new Thread(() -> { 
-                try {serverCon.close();scan.close();} catch (IOException e) {}
+                try {serverCon.close();scan.close();} catch (IOException e) {e.printStackTrace();}
             }));
 
             // Attempt authentication with server
