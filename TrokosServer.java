@@ -1,7 +1,10 @@
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.KeyStore;
+import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.SignedObject;
 import java.security.cert.Certificate;
@@ -21,9 +24,12 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.PrintWriter;
+import java.io.Serial;
+import java.io.Serializable;
 import java.net.Socket;
 
 import javax.net.ServerSocketFactory;
@@ -37,6 +43,10 @@ import com.google.zxing.common.BitMatrix;
 
 public class TrokosServer {
 
+    long BLOCK_N = 0;
+    static PrivateKey privK;
+    static Signature sig;
+
     public static void main(String[] args) {
         int serverPort = 45678;
         if (args.length < 3) {System.out.println("Missing launch arguments");}
@@ -46,14 +56,22 @@ public class TrokosServer {
         }
 
         String cipher_pass = args[0];
-        String keystore = args[1];
-        String pass_keystore = args[2];
+        String keyStorePath = args[1];
+        String pass_keyStore = args[2];
         
-        System.setProperty("javax.net.ssl.keyStore", keystore);
-        System.setProperty("javax.net.ssl.keyStorePassword", pass_keystore);
+        System.setProperty("javax.net.ssl.keyStore", keyStorePath);
+        System.setProperty("javax.net.ssl.keyStorePassword", pass_keyStore);
         TrokosServer server = new TrokosServer();
-
+        
         try {
+            InputStream keyStoreData = new FileInputStream(keyStorePath);
+            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+            ks.load(keyStoreData, pass_keyStore.toCharArray());
+            privK = (PrivateKey) ks.getKey("trokosserver", pass_keyStore.toCharArray());
+            sig = Signature.getInstance("SHA256withRSA");
+
+            // reentrant allows us to lock nested methods with no deadlocks
+            // which is useful to avoid having to create a lock for each method 
             Lock dbLock = new ReentrantLock();
             Lock uaLock = new ReentrantLock();
             ServerSocketFactory ssf = SSLServerSocketFactory.getDefault();
@@ -78,6 +96,8 @@ public class TrokosServer {
             groupPayHistory.createNewFile();
             pendingPayQR.createNewFile();
 
+            server.initBlockchain();
+
             while(true) {
                 Socket inSoc = sSocket.accept();
                 String clientHost = inSoc.getInetAddress().getHostAddress();
@@ -86,6 +106,14 @@ public class TrokosServer {
                 newServerThread.start();
             }
         } catch (Exception e) {e.printStackTrace();}
+    }
+
+    public void initBlockchain() {
+        // check how many blocks we have and set BLOCK_N
+
+        // go from block 1 to BLOCK_N
+            // check if signature matches
+            // check if hash matches last block
     }
 
     public static byte[] createQR(String data, int height, int width) {
@@ -178,16 +206,6 @@ public class TrokosServer {
                     outStream.writeObject("SUCCESS:User authenticated!");
                 }
 
-                
-                // dbLock.lock();
-                // try {
-                //     // DO STUFF
-                // } catch (Exception e) {
-                //     e.printStackTrace();
-                // } finally {
-                //     dbLock.unlock();
-                // }
-
 
                 // Listen for commands from client
                 while(true) {
@@ -256,11 +274,15 @@ public class TrokosServer {
                             break;
                         case "c":
                         case "confirmQRcode":
-                            r = confirmQRcode(userID, command);
+                            r = confirmQRcode(userID, command, inStream);
                             outStream.writeObject(r);
                             break;
                         case "getrequest":
                             r = getRequestInfo(userID, command);
+                            outStream.writeObject(r);
+                            break;
+                        case "getrequestQR":
+                            r = getRequestInfoQR(userID, command);
                             outStream.writeObject(r);
                             break;
                         default:
@@ -299,22 +321,47 @@ public class TrokosServer {
         }
 
 
-        // Remove pending qrcode payment and pay it
-        private String confirmQRcode(String clientID, String[] args) {
-            if (args.length != 2) {return "Missing or wrong arguments";}
-            String qrcode = args[1];
-            String entry = auxGetPendGroup(qrcode, Paths.get("db/pendingPayQR.txt"));
+        private String getRequestInfoQR(String clientID, String[] args) {
+            if (args.length != 2) {return "ERROR: Missing or wrong arguments";}
+            String reqID = args[1];
+            String entry = auxGetPendGroup(reqID, Paths.get("db/pendingPayQR.txt"));
             if (entry.equals("")) {return "ERROR: QRCode given does not exist";}
             String[] e = entry.split(":");
-            String userid = e[0];
+            String receiver = e[0];
             String amount = e[1];
-            if (userid.equals(clientID)) {return "ERROR: You cannot pay yourself!";}
-            auxRemoveLine(entry,  Paths.get("db/pendingPayQR.txt"));
-            if (Double.parseDouble(amount) > Double.parseDouble(getBalance(clientID))) {
-                return "ERROR: amount exceeds your funds";
+            if (receiver.equals(clientID)) {return "ERROR: You cannot pay yourself!";}
+            return receiver+":"+amount;
+        }
+
+
+        // Remove pending qrcode payment and pay it
+        // LOCK because multiple users can try to pay one QRcode at same time
+        private String confirmQRcode(String clientID, String[] args, ObjectInputStream inStream) {
+            dbLock.lock();
+            try{
+                SignedObject transaction = (SignedObject) inStream.readObject();
+                if (args.length != 2) {return "ERROR: Missing or wrong arguments";}
+                String qrcode = args[1];
+                String entry = auxGetPendGroup(qrcode, Paths.get("db/pendingPayQR.txt"));
+                if (entry.equals("")) {return "ERROR: QRCode given does not exist";}
+                String[] e = entry.split(":");
+                String receiver = e[0];
+                String amount = e[1];
+                if (Double.parseDouble(amount) > Double.parseDouble(getBalance(clientID))) {
+                    return "ERROR: amount exceeds your funds";
+                }
+                if (!validateTransaction(transaction)) {
+                    return "ERROR: Signature verification failed!";
+                }
+                transferBalance(clientID, receiver, amount);
+                auxRemoveLine(entry,  Paths.get("db/pendingPayQR.txt"));
+                // TODO: Add to blockchain
+                // 
+                return "Payment made to "+receiver+" of "+amount+" successfully";
+            } catch (Exception e) {e.printStackTrace(); return "ERROR: Exception error";}
+            finally {
+                dbLock.unlock();
             }
-            transferBalance(clientID, userid, amount);
-            return "Payment made to "+userid+" of "+amount+" successfully";
         }
 
 
@@ -352,9 +399,8 @@ public class TrokosServer {
                 }
 
                 transferBalance(clientID, userID, amount);
-                
                 // TODO: Add to blockchain
-                // 
+                addToBlockChain(transaction);
 
                 return "Payment made successfully";
             } catch (Exception e) {e.printStackTrace(); return "ERROR: Exception error";}
@@ -796,5 +842,78 @@ public class TrokosServer {
             } catch (Exception e) {e.printStackTrace(); return false;}
             return true;
         }
+
+        private void addToBlockChain(SignedObject transaction) {
+            dbLock.lock();
+            try {
+                if (BLOCK_N == 0) {
+                    // create first blockchain file
+                    List<SignedObject> t_list = new ArrayList<>(Arrays.asList(transaction));
+                    Block b1 = new Block( new byte[32], 1, t_list);
+                    SignedObject block_1 = new SignedObject(b1, privK, sig);
+                    FileOutputStream fout = new FileOutputStream("db/block_1.blk");
+                    ObjectOutputStream oos = new ObjectOutputStream(fout);
+                    oos.writeObject(block_1);
+                    fout.close();
+                    oos.close();
+
+                } else {
+                    // add to lastest blockchain file
+                    FileInputStream filein = new FileInputStream("db/block_1.blk");
+                    ObjectInputStream objin = new ObjectInputStream(filein);
+                    SignedObject block = (SignedObject) objin.readObject();
+                    Block b = (Block) block.getObject();
+                    filein.close();
+                    objin.close();
+
+                    b.addTransaction(transaction);
+
+                    SignedObject blk_signObj = new SignedObject(b, privK, sig);
+                    FileOutputStream fout = new FileOutputStream("db/block_1.blk");
+                    ObjectOutputStream oos = new ObjectOutputStream(fout);
+                    oos.writeObject(blk_signObj);
+                    fout.close();
+                    oos.close();
+                }
+
+                //open and check?
+                FileInputStream filein = new FileInputStream("db/block_1.blk");
+                ObjectInputStream objin = new ObjectInputStream(filein);
+                SignedObject block = (SignedObject) objin.readObject();
+                Block b = (Block) block.getObject();
+                SignedObject t1 = b.transactions.get((int) BLOCK_N);
+                System.out.println((String)t1.getObject()); // it works!
+                filein.close();
+                objin.close();
+
+            } catch (Exception e) {e.printStackTrace();}
+            finally {
+                BLOCK_N++;
+                dbLock.unlock();
+            }
+        }
+    }
+}
+
+final class Block implements Serializable {
+        
+    @Serial
+    private static final long serialVersionUID = 1L;
+    
+    byte[] hash;
+    long b_number;
+    long n_transactions;
+    List<SignedObject> transactions;
+
+    Block(byte[] hash, long b_n, List<SignedObject> transactions) {
+        this.hash = hash;
+        this.b_number = b_n;
+        this.n_transactions = transactions.size();
+        this.transactions = transactions;
+    }
+
+    public void addTransaction(SignedObject tr) {
+        transactions.add(tr);
+        n_transactions = transactions.size();
     }
 }
