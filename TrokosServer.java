@@ -12,6 +12,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Random;
 import java.util.UUID;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.File;
@@ -23,6 +25,7 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.PrintWriter;
 import java.net.Socket;
+
 import javax.net.ServerSocketFactory;
 import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLServerSocketFactory;
@@ -51,6 +54,7 @@ public class TrokosServer {
         TrokosServer server = new TrokosServer();
 
         try {
+            Lock dbLock = new ReentrantLock();
             ServerSocketFactory ssf = SSLServerSocketFactory.getDefault();
             final SSLServerSocket sSocket = (SSLServerSocket) ssf.createServerSocket(serverPort);
 
@@ -72,11 +76,12 @@ public class TrokosServer {
             pendingPayG.createNewFile();
             groupPayHistory.createNewFile();
             pendingPayQR.createNewFile();
+
             while(true) {
                 Socket inSoc = sSocket.accept();
                 String clientHost = inSoc.getInetAddress().getHostAddress();
                 System.out.println("Client Connected: " + clientHost);
-                ServerThread newServerThread = server.new ServerThread(inSoc, clientHost);
+                ServerThread newServerThread = server.new ServerThread(inSoc, clientHost, dbLock);
                 newServerThread.start();
             }
         } catch (Exception e) {e.printStackTrace();}
@@ -102,21 +107,26 @@ public class TrokosServer {
 
         private Socket clientCon = null;
         private String clientHost = null;
+        private Lock dbLock;
 
-        ServerThread(Socket inSoc, String cHost) {clientCon = inSoc; clientHost = cHost;}
+        ServerThread(Socket inSoc, String cHost, Lock lock) {
+            clientCon = inSoc; 
+            clientHost = cHost;
+            dbLock = lock;
+        }
  
         public void run(){
             try {
-                ObjectOutputStream outStream = new ObjectOutputStream(clientCon.getOutputStream());
-                ObjectInputStream inStream = new ObjectInputStream(clientCon.getInputStream());
+                final ObjectOutputStream outStream = new ObjectOutputStream(clientCon.getOutputStream());
+                final ObjectInputStream inStream = new ObjectInputStream(clientCon.getInputStream());
 
-
-                // Authenticate the user and create user account if needed
+                // Authenticate the User
                 String userID = (String)inStream.readObject();
                 Long nonce = new Random().nextLong();
                 outStream.writeObject(nonce);
                 
                 if (!auxUserExists(userID)) {
+                    // Create new User
                     outStream.writeObject(false);
 
                     Certificate clientCert = (Certificate) inStream.readObject();
@@ -127,9 +137,7 @@ public class TrokosServer {
                     Boolean sign_matches = signedNonce.verify(clientCert.getPublicKey(), s);
                     
                     if (!nonce.equals(received) || !sign_matches) {
-                        outStream.writeObject("FAILURE:Couldn't create new user, signature verification failed!");
-                        clientCon.close();
-                        System.out.println("Client Disconnected: " + clientHost);
+                        failAndDisconnectUser("Couldn't create new user, signature verification failed!", outStream);
                         return;
                     }
 
@@ -146,34 +154,38 @@ public class TrokosServer {
 
                     outStream.writeObject("SUCCESS:New user created!");
                 } else {
+                    // User already exists
                     outStream.writeObject(true);
 
                     SignedObject signedNonce = (SignedObject) inStream.readObject();
 
-                    String userdata = Files.lines(Paths.get("db/UserData.txt"))
-                        .filter(l -> l.split(":")[0]
-                        .equals(userID))
-                        .findFirst().orElse("");
-                    String certName = userdata.split(":")[1];
-
-                    FileInputStream cis = new FileInputStream("db/"+certName);
-                    CertificateFactory cf = CertificateFactory.getInstance("X509");
-                    Certificate userCert = cf.generateCertificate(cis);
+                    Certificate userCert = auxGetUserCert(userID);
+                    if (userCert == null) {
+                        failAndDisconnectUser("Failed to get user certificate", outStream);
+                        return;
+                    }
 
                     Signature s = Signature.getInstance("SHA256withRSA");
                     Boolean sign_matches = signedNonce.verify(userCert.getPublicKey(), s);
                     if (!sign_matches) {
-                        outStream.writeObject("FAILURE:Couldn't authenticate, signature verification failed!");
-                        clientCon.close();
-                        System.out.println("Client Disconnected: " + clientHost);
+                        failAndDisconnectUser("Couldn't authenticate, signature verification failed!", outStream);
                         return;
                     }
 
                     outStream.writeObject("SUCCESS:User authenticated!");
                 }
 
-
                 
+                // dbLock.lock();
+                // try {
+                //     // DO STUFF
+                // } catch (Exception e) {
+                //     e.printStackTrace();
+                // } finally {
+                //     dbLock.unlock();
+                // }
+
+
                 // Listen for commands from client
                 while(true) {
                     String[] command = (String[])inStream.readObject();
@@ -187,7 +199,7 @@ public class TrokosServer {
                             break;
                         case "m":
                         case "makepayment":
-                            r = makePayment(userID, command);
+                            r = makePayment(userID, command, inStream);
                             outStream.writeObject(r);
                             break;
                         case "r":
@@ -316,21 +328,29 @@ public class TrokosServer {
 
 
         // Transfer amount from client to another user
-        private String makePayment(String clientID, String[] args) {
-            if (args.length != 3) {return "Missing or wrong arguments";}
-            String userID = args[1];
-            String amount = args[2];
+        private String makePayment(String clientID, String[] args, ObjectInputStream inStream) {
+            try{
+                SignedObject transaction = (SignedObject) inStream.readObject();
+                if (args.length != 3) {return "Missing or wrong arguments";}
+                String userID = args[1];
+                String amount = args[2];
 
-            if (!auxUserExists(userID)) {
-                return "ERROR: User doesn't exist";
-            }
-            if (Double.parseDouble(amount) > Double.parseDouble(getBalance(clientID))) {
-                return "ERROR: amount exceeds your funds";
-            }
+                if (!auxUserExists(userID)) {
+                    return "ERROR: User doesn't exist";
+                }
+                if (Double.parseDouble(amount) > Double.parseDouble(getBalance(clientID))) {
+                    return "ERROR: Amount exceeds your funds";
+                }
+                if (!validateTransaction(transaction)) {
+                    return "ERROR: Signature verification failed!"; 
+                }
 
-            removeBalance(clientID, amount);
-            addBalance(userID, amount);
-            return "Payment made successfully";
+                // TODO: Add to blockchain
+
+                removeBalance(clientID, amount);
+                addBalance(userID, amount);
+                return "Payment made successfully";
+            } catch (Exception e) {e.printStackTrace(); return "ERROR: Exception error";}
         }
 
         
@@ -682,6 +702,43 @@ public class TrokosServer {
                 return filteredLines;
             } catch (Exception e) {e.printStackTrace();}
             return new ArrayList<String>();
+        }
+
+        private Certificate auxGetUserCert(String userID) {
+            try{
+                String userdata = Files.lines(Paths.get("db/UserData.txt"))
+                    .filter(l -> l.split(":")[0]
+                    .equals(userID))
+                    .findFirst().orElse("");
+                String certName = userdata.split(":")[1];
+
+                FileInputStream cis = new FileInputStream("db/"+certName);
+                CertificateFactory cf = CertificateFactory.getInstance("X509");
+                return cf.generateCertificate(cis);
+            } catch (Exception e) {e.printStackTrace(); return null;}
+        }
+
+        private void failAndDisconnectUser(String message, ObjectOutputStream outStream) {
+            try{
+                outStream.writeObject("FAILURE:"+message);
+                clientCon.close();
+                System.out.println("Client Disconnected: " + clientHost);
+            } catch (Exception e) {e.printStackTrace();}
+        }
+
+        // transaction: "receiver:amount:sender"
+        private Boolean validateTransaction(SignedObject transaction) {
+            try {
+                String ts = (String) transaction.getObject();
+                String client = ts.split(":")[2];
+                Certificate userCert = auxGetUserCert(client);
+                if (userCert == null) {return false;}
+                Signature s = Signature.getInstance("SHA256withRSA");
+                if (!transaction.verify(userCert.getPublicKey(), s)) {
+                    return false;
+                }
+            } catch (Exception e) {e.printStackTrace(); return false;}
+            return true;
         }
     }
 }
