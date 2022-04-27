@@ -55,6 +55,7 @@ public class TrokosServer {
 
         try {
             Lock dbLock = new ReentrantLock();
+            Lock uaLock = new ReentrantLock();
             ServerSocketFactory ssf = SSLServerSocketFactory.getDefault();
             final SSLServerSocket sSocket = (SSLServerSocket) ssf.createServerSocket(serverPort);
 
@@ -81,7 +82,7 @@ public class TrokosServer {
                 Socket inSoc = sSocket.accept();
                 String clientHost = inSoc.getInetAddress().getHostAddress();
                 System.out.println("Client Connected: " + clientHost);
-                ServerThread newServerThread = server.new ServerThread(inSoc, clientHost, dbLock);
+                ServerThread newServerThread = server.new ServerThread(inSoc, clientHost, dbLock, uaLock);
                 newServerThread.start();
             }
         } catch (Exception e) {e.printStackTrace();}
@@ -108,11 +109,13 @@ public class TrokosServer {
         private Socket clientCon = null;
         private String clientHost = null;
         private Lock dbLock;
+        private Lock userAccountsLock;
 
-        ServerThread(Socket inSoc, String cHost, Lock lock) {
+        ServerThread(Socket inSoc, String cHost, Lock dblock, Lock uaLock) {
             clientCon = inSoc; 
             clientHost = cHost;
-            dbLock = lock;
+            dbLock = dblock;
+            userAccountsLock = uaLock;
         }
  
         public void run(){
@@ -190,7 +193,7 @@ public class TrokosServer {
                 while(true) {
                     String[] command = (String[])inStream.readObject();
                     String r = "";
-
+                    
                     switch (command[0]){
                         case "b":
                         case "balance":
@@ -214,7 +217,7 @@ public class TrokosServer {
                             break;
                         case "p":
                         case "payrequest":
-                            r = payRequest(userID, command);
+                            r = payRequest(userID, command, inStream);
                             outStream.writeObject(r);
                             break;
                         case "n":
@@ -254,6 +257,10 @@ public class TrokosServer {
                         case "c":
                         case "confirmQRcode":
                             r = confirmQRcode(userID, command);
+                            outStream.writeObject(r);
+                            break;
+                        case "getrequest":
+                            r = getRequestInfo(userID, command);
                             outStream.writeObject(r);
                             break;
                         default:
@@ -306,8 +313,7 @@ public class TrokosServer {
             if (Double.parseDouble(amount) > Double.parseDouble(getBalance(clientID))) {
                 return "ERROR: amount exceeds your funds";
             }
-            removeBalance(clientID, amount);
-            addBalance(userid, amount);
+            transferBalance(clientID, userid, amount);
             return "Payment made to "+userid+" of "+amount+" successfully";
         }
 
@@ -345,10 +351,11 @@ public class TrokosServer {
                     return "ERROR: Signature verification failed!"; 
                 }
 
+                transferBalance(clientID, userID, amount);
+                
                 // TODO: Add to blockchain
+                // 
 
-                removeBalance(clientID, amount);
-                addBalance(userID, amount);
                 return "Payment made successfully";
             } catch (Exception e) {e.printStackTrace(); return "ERROR: Exception error";}
         }
@@ -387,29 +394,51 @@ public class TrokosServer {
         }
 
 
-        // Pay the request with the ID given
-        private String payRequest(String clientID, String[] args) {
-            if (args.length != 2) {return "Missing or wrong arguments";}
-            String reqID  = args[1];
-            Double amount = 0.0;
+        private String getRequestInfo(String clientID, String[] args) {
+            if (args.length != 2) {return "ERROR: Missing or wrong arguments";}
+            String reqID = args[1];
             List<String> requests = auxGetLinesByUser(clientID, Paths.get("db/pendingPayI.txt"));
-            if (requests.isEmpty()) {return "ERROR: No pending payment with given ID exists";}
+            if (requests.isEmpty()) {return "ERROR: You have no pending payments!";}
             for (String request: requests){
                 String[] s = request.split(":");
                 if (s[0].equals(clientID) && s[3].equals(reqID)) {
-                    amount = Double.parseDouble(s[2]);
-                    if ( amount > Double.parseDouble(getBalance(clientID)) ) {
-                        return "ERROR: amount exceeds your funds";
-                    }
-                    removeBalance(clientID, amount.toString());
-                    addBalance(s[1], amount.toString());
-                    auxRemoveLine(request, Paths.get("db/pendingPayI.txt"));
-                    // check for group payments here
-                    if (s.length == 5) {updateGroupPay(s[4]);}
-                    return "Payment made successfully";
+                    Double amount = Double.parseDouble(s[2]);
+                    return s[1]+":"+amount.toString();
                 }
             }
-            return "ERROR: You aren't part of this request";
+            return "ERROR: You have no pending payments with given ID";
+        }
+
+
+        // Pay the request with the ID given, we know it exists already
+        private String payRequest(String clientID, String[] args, ObjectInputStream inStream) {
+            try {
+                SignedObject transaction = (SignedObject) inStream.readObject();
+                if (args.length != 2) {return "Missing or wrong arguments";}
+                String reqID  = args[1];
+                Double amount = 0.0;
+                List<String> requests = auxGetLinesByUser(clientID, Paths.get("db/pendingPayI.txt"));
+                for (String request: requests){
+                    String[] s = request.split(":");
+                    if (s[0].equals(clientID) && s[3].equals(reqID)) {
+                        amount = Double.parseDouble(s[2]);
+                        if ( amount > Double.parseDouble(getBalance(clientID)) ) {
+                            return "ERROR: Amount exceeds your funds";
+                        }
+                        if (!validateTransaction(transaction)) {
+                            return "ERROR: Signature verification failed!";
+                        }
+                        transferBalance(clientID, s[1], amount.toString());
+                        auxRemoveLine(request, Paths.get("db/pendingPayI.txt"));
+                        // update group payment system if needed
+                        if (s.length == 5) {updateGroupPay(s[4]);}
+                        // TODO: Add to blockchain
+                        //
+                        return "Payment made successfully";
+                    }
+                }
+                return "ERROR: This should never be reached! app is buggy!";
+            } catch (Exception e) {e.printStackTrace(); return "ERROR: Exception error";}
         }
 
 
@@ -589,6 +618,18 @@ public class TrokosServer {
             auxReplaceLine(oldLine, newLine, Paths.get("db/UserAccounts.txt"));
         }
 
+        // Transfer amount of balance from user1 to user2
+        private void transferBalance(String user1, String user2, String amount) {
+            userAccountsLock.lock();
+            try{
+                removeBalance(user1, amount);
+                addBalance(user2, amount);
+            } catch (Exception e) {e.printStackTrace();}
+            finally {
+                userAccountsLock.unlock();
+            }
+        }
+
 
         /* ---------------------- AUX FUNCTIONS ---------------------- */
 
@@ -600,8 +641,10 @@ public class TrokosServer {
                 return false;
             }
         }
-
+        
+        // LOCK
         private void auxReplaceLine(String oldL, String newL, Path Path) {
+            dbLock.lock();
             try {
                 List<String> lines = new ArrayList<>(Files.readAllLines(Path, StandardCharsets.UTF_8));
                 for (int i = 0; i < lines.size(); i++) {
@@ -612,9 +655,14 @@ public class TrokosServer {
                 }
                 Files.write(Path, lines, StandardCharsets.UTF_8);
             } catch (Exception e) {e.printStackTrace();}
+            finally {
+                dbLock.unlock();
+            }
         }
-
+        
+        //LOCK
         private void auxRemoveLine(String line, Path Path) {
+            dbLock.lock();
             try {
                 List<String> lines = new ArrayList<>(Files.readAllLines(Path, StandardCharsets.UTF_8));
                 for (int i = 0; i < lines.size(); i++) {
@@ -625,14 +673,22 @@ public class TrokosServer {
                 }
                 Files.write(Path, lines, StandardCharsets.UTF_8);
             } catch (Exception e) {e.printStackTrace();}
+            finally {
+                dbLock.unlock();
+            }
         }
-
+        
+        // LOCK
         private void auxAddLine(String line, Path Path) {
+            dbLock.lock();
             try {
                 PrintWriter w = new PrintWriter(new FileWriter(Path.toString(),true));
                 w.println(line);
                 w.close();
             } catch (Exception e) {e.printStackTrace();}
+            finally {
+                dbLock.unlock();
+            }
         }
 
         private List<String> auxGetLinesByUser(String user, Path Path) {

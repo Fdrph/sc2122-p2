@@ -97,8 +97,7 @@ public class Trokos {
                         outStream.writeObject(command);
                         String r = (String)inStream.readObject();
                         if (r.equals("ERROR")) {
-                            System.out.println();
-                            System.out.println((String)inStream.readObject());
+                            System.out.println(delim+(String)inStream.readObject());
                         } else {
                             String imgstr = (String)inStream.readObject();
                             String code = (String)inStream.readObject();
@@ -111,11 +110,47 @@ public class Trokos {
                     case "makepayment":
                         outStream.writeObject(command);
                         String[] t_array = Arrays.copyOfRange(command, 1, command.length);
+                        // receiver:amount:sender
                         String transaction = String.join(":", t_array) + ":" + userID;
                         SignedObject signed_t = new SignedObject(transaction, privK, sig);
 
                         outStream.writeObject(signed_t);
                         System.out.println(delim+(String)inStream.readObject()+delim);
+                        break;
+                    case "p":
+                    case "payrequest":
+                        String[] getreq = {"getrequest", command[1]};
+                        outStream.writeObject(getreq);
+                        String ansr = (String) inStream.readObject();
+                        String[] splt = ansr.split(":");
+                        if (splt[0].equals("ERROR")) {
+                            System.out.println(delim+splt[1]+delim);
+                        } else {
+                            outStream.writeObject(command);
+                            // receiver:amount:sender
+                            transaction = ansr+":"+userID;
+                            signed_t = new SignedObject(transaction, privK, sig);
+
+                            outStream.writeObject(signed_t);
+                            System.out.println(delim+(String)inStream.readObject()+delim);
+                        }
+                    case "c":
+                    case "confirmQRcode":
+                        String[] getqrreq = {"getrequestQR", command[1]};
+                        outStream.writeObject(getqrreq);
+                        String asr = (String) inStream.readObject();
+                        String[] sp = asr.split(":");
+                        if (sp[0].equals("ERROR")) {
+                            System.out.println(delim+sp[1]+delim);
+                        } else {
+                            outStream.writeObject(command);
+                            // receiver:amount:sender
+                            transaction = asr+":"+userID;
+                            signed_t = new SignedObject(transaction, privK, sig);
+
+                            outStream.writeObject(signed_t);
+                            System.out.println(delim+(String)inStream.readObject()+delim);
+                        }
                         break;
                     default:
                         outStream.writeObject(command);
