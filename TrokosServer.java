@@ -2,6 +2,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.AlgorithmParameters;
 import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.PrivateKey;
@@ -18,6 +19,8 @@ import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.File;
@@ -33,6 +36,13 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.net.Socket;
 
+import javax.crypto.Cipher;
+import javax.crypto.CipherInputStream;
+import javax.crypto.CipherOutputStream;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.PBEParameterSpec;
 import javax.net.ServerSocketFactory;
 import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLServerSocketFactory;
@@ -48,6 +58,7 @@ public class TrokosServer {
     static PrivateKey privK;
     static PublicKey pubK;
     static Signature sig;
+    static char[] cipher_pass;
 
     public static void main(String[] args) {
         int serverPort = 45678;
@@ -57,7 +68,7 @@ public class TrokosServer {
             args = Arrays.copyOfRange(args, 1, args.length);
         }
 
-        String cipher_pass = args[0];
+        cipher_pass = args[0].toCharArray();
         String keyStorePath = args[1];
         String pass_keyStore = args[2];
         
@@ -75,11 +86,7 @@ public class TrokosServer {
             pubK = cert.getPublicKey();
             sig = Signature.getInstance("SHA256withRSA");
 
-            // reentrant allows us to lock nested methods with no deadlocks
-            // which is useful to avoid having to create a lock for each method 
             Lock dbLock = new ReentrantLock();
-            Lock uaLock = new ReentrantLock();
-            Lock bcLock = new ReentrantLock();
             ServerSocketFactory ssf = SSLServerSocketFactory.getDefault();
             final SSLServerSocket sSocket = (SSLServerSocket) ssf.createServerSocket(serverPort);
 
@@ -87,15 +94,17 @@ public class TrokosServer {
                 try {sSocket.close();} catch (IOException e) {e.printStackTrace();}
             }});
 
+            // TODO: MAKE ALL THESE USE NEW ENCRYPTED FILES
             File userData = new File("db/UserData.txt");
-            File userAccounts = new File("db/UserAccounts.txt");
+            if (!new File("db/UserAccounts.crypt").isFile()) {
+                encryptFileFromLines("db/UserAccounts.crypt", new ArrayList<String>(), cipher_pass);
+            }
             File userGroups = new File("db/UserGroups.txt");
             File pendingPayI = new File("db/pendingPayI.txt");
             File pendingPayG = new File("db/pendingPayG.txt");
             File groupPayHistory = new File("db/GroupPayHistory.txt");
             File pendingPayQR = new File("db/pendingPayQR.txt");
             userData.createNewFile();
-            userAccounts.createNewFile();
             userGroups.createNewFile();
             pendingPayI.createNewFile();
             pendingPayG.createNewFile();
@@ -103,13 +112,15 @@ public class TrokosServer {
             pendingPayQR.createNewFile();
 
             server.initBlockchain();
+            
+            
 
             System.out.println("Listening for clients:");
             while(true) {
                 Socket inSoc = sSocket.accept();
                 String clientHost = inSoc.getInetAddress().getHostAddress();
                 System.out.println("Client Connected: " + clientHost);
-                ServerThread newServerThread = server.new ServerThread(inSoc, clientHost, dbLock, uaLock, bcLock);
+                ServerThread newServerThread = server.new ServerThread(inSoc, clientHost, dbLock);
                 newServerThread.start();
             }
         } catch (Exception e) {e.printStackTrace();}
@@ -160,7 +171,7 @@ public class TrokosServer {
     }
 
 
-    public byte[] getFileHash(String filePath) {
+    public static byte[] getFileHash(String filePath) {
         try {
             byte[] hash = MessageDigest.getInstance("SHA-256")
                 .digest(Files.readAllBytes(Paths.get(filePath)));
@@ -184,21 +195,68 @@ public class TrokosServer {
         return new byte[0];
     }
 
+
+    public static void encryptFileFromLines(String fileName, ArrayList<String> lines, char[] pass) {
+        try {
+            Cipher cipher = makeCipher(pass, fileName, true);
+            CipherOutputStream cyph_out = new CipherOutputStream(new FileOutputStream(fileName), cipher);
+            String file_string = String.join("|",lines);
+            cyph_out.write(file_string.getBytes(StandardCharsets.UTF_8));
+            cyph_out.close();
+            String p_file_name = fileName.replace(".crypt", ".params");
+            Files.write(Paths.get(p_file_name), cipher.getParameters().getEncoded());
+        } catch (Exception e) {e.printStackTrace();}
+    }
+
+    
+    public static ArrayList<String> decryptFileToLines(String fileName, char[] pass) {
+        try {
+            Cipher cipher = makeCipher(pass, fileName, false);
+            CipherInputStream cyph_in = new CipherInputStream(new FileInputStream(fileName), cipher);
+            byte[] bytes = cyph_in.readAllBytes();
+            cyph_in.close();
+            String file_string = new String(bytes, StandardCharsets.UTF_8);
+            ArrayList<String> file_lines = new ArrayList<>(Arrays.asList(file_string.split("\\|")));
+            return file_lines;
+        } catch (Exception e) {e.printStackTrace(); return new ArrayList<String>();}
+    }
+    
+    
+    private static Cipher makeCipher(char[] pass, String fileName, Boolean encrypt) throws Exception {
+        byte[] salt = {
+            (byte) 0x43, (byte) 0x76, (byte) 0x95, (byte) 0xc7,
+            (byte) 0x5b, (byte) 0xd7, (byte) 0x45, (byte) 0x17 
+        };
+
+        PBEKeySpec keySpec = new PBEKeySpec(pass, salt, 20);
+        SecretKeyFactory kf = SecretKeyFactory.getInstance("PBEWithHmacSHA256AndAES_128");
+        SecretKey key = kf.generateSecret(keySpec);
+        Cipher cipher = Cipher.getInstance("PBEWithHmacSHA256AndAES_128");
+
+        if (encrypt) {
+            cipher.init(Cipher.ENCRYPT_MODE, key);
+        } else {
+            String p_file_name = fileName.replace(".crypt", ".params");
+            byte[] params = Files.readAllBytes(Paths.get(p_file_name));
+            AlgorithmParameters p = AlgorithmParameters.getInstance("PBEWithHmacSHA256AndAES_128");
+            p.init(params);
+            cipher.init(Cipher.DECRYPT_MODE, key, p);
+        }
+        return cipher;
+    }
+
+
     // One Thread for each client connection
     public class ServerThread extends Thread {
 
         private Socket clientCon = null;
         private String clientHost = null;
         private Lock dbLock;
-        private Lock bcLock;
-        private Lock userAccountsLock;
 
-        ServerThread(Socket inSoc, String cHost, Lock dblock, Lock uaLock, Lock bclock) {
+        ServerThread(Socket inSoc, String cHost, Lock dblock) {
             clientCon = inSoc; 
             clientHost = cHost;
             dbLock = dblock;
-            bcLock = bclock;
-            userAccountsLock = uaLock;
         }
  
         public void run(){
@@ -234,9 +292,7 @@ public class TrokosServer {
                     PrintWriter writer = new PrintWriter(new FileWriter("db/UserData.txt",true));
                     writer.println(userID + ":" + userID+".cert");
                     writer.close();
-                    PrintWriter balWriter = new PrintWriter(new FileWriter("db/UserAccounts.txt",true));
-                    balWriter.println(userID + ":" + "100.0");
-                    balWriter.close();
+                    auxAddLine(userID + ":" + "100.0", "db/userAccounts.crypt");
 
                     outStream.writeObject("SUCCESS:New user created!");
                 } else {
@@ -270,74 +326,104 @@ public class TrokosServer {
                     switch (command[0]){
                         case "b":
                         case "balance":
+                            dbLock.lock();
                             r = getBalance(userID);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "m":
                         case "makepayment":
+                            dbLock.lock();
                             r = makePayment(userID, command, inStream);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "r":
                         case "requestpayment":
+                            dbLock.lock();
                             r = requestPayment(userID, command);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "v":
                         case "viewrequests":
+                            dbLock.lock();
                             r = viewRequests(userID, command);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "p":
                         case "payrequest":
+                            dbLock.lock();
                             r = payRequest(userID, command, inStream);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "n":
                         case "newgroup":
+                            dbLock.lock();
                             r = newGroup(userID, command);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "a":
                         case "addu":
+                            dbLock.lock();
                             r = addUser(userID, command);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "g":
                         case "groups":
+                            dbLock.lock();
                             r = viewGroups(userID, command);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "d":
                         case "dividepayment":
+                            dbLock.lock();
                             r = dividePayment(userID, command);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "s":
                         case "statuspayments":
+                            dbLock.lock();
                             r = statusPayments(userID, command);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "h":
                         case "history":
+                            dbLock.lock();
                             r = historyGroup(userID, command);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "o":
                         case "obtainQRcode":
+                            dbLock.lock();
                             obtainQRcode(userID, command, outStream); 
+                            dbLock.unlock();
                             break;
                         case "c":
                         case "confirmQRcode":
+                            dbLock.lock();
                             r = confirmQRcode(userID, command, inStream);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "getrequest":
+                            dbLock.lock();
                             r = getRequestInfo(userID, command);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         case "getrequestQR":
+                            dbLock.lock();
                             r = getRequestInfoQR(userID, command);
+                            dbLock.unlock();
                             outStream.writeObject(r);
                             break;
                         default:
@@ -366,7 +452,7 @@ public class TrokosServer {
             String amount = args[1];
             String qrcodeID = UUID.randomUUID().toString();
             String entry = clientID+":"+amount+":"+qrcodeID;
-            auxAddLine(entry, Paths.get("db/pendingPayQR.txt"));
+            auxAddLine(entry, "db/pendingPayQR.txt");
             outStream.writeObject("SUCCESS");
             byte[] img = createQR(qrcodeID, 350, 350);
             String imgstr = Base64.getEncoder().encodeToString(img);
@@ -390,9 +476,7 @@ public class TrokosServer {
 
 
         // Remove pending qrcode payment and pay it
-        // LOCK because multiple users can try to pay one QRcode at same time
         private String confirmQRcode(String clientID, String[] args, ObjectInputStream inStream) {
-            dbLock.lock();
             try{
                 SignedObject transaction = (SignedObject) inStream.readObject();
                 if (args.length != 2) {return "ERROR: Missing or wrong arguments";}
@@ -414,9 +498,6 @@ public class TrokosServer {
 
                 return "Payment made to "+receiver+" of "+amount+" successfully";
             } catch (Exception e) {e.printStackTrace(); return "ERROR: Exception error";}
-            finally {
-                dbLock.unlock();
-            }
         }
 
 
@@ -424,13 +505,13 @@ public class TrokosServer {
         private String getBalance(String user) {
             String balance = "";
             try{
-                Path p = Paths.get("db/UserAccounts.txt");
-                balance = Files.lines(p)
+                ArrayList<String> lines = decryptFileToLines("db/UserAccounts.crypt", cipher_pass);
+                balance = lines.stream()
                     .filter(l -> l.split(":")[0]
                     .equals(user))
                     .findFirst().orElse("");
                 balance = balance.split(":")[1];
-            } catch(IOException e) {e.printStackTrace();}
+            } catch(Exception e) {e.printStackTrace();}
             return balance;
         }
 
@@ -471,7 +552,7 @@ public class TrokosServer {
 
             String uID = UUID.randomUUID().toString();
             String line = userID+":"+clientID+":"+nr.toString()+":"+ uID;
-            auxAddLine(line, Paths.get("db/pendingPayI.txt"));
+            auxAddLine(line, "db/pendingPayI.txt");
             return "Request created sucessfully";
         }
 
@@ -548,7 +629,7 @@ public class TrokosServer {
             if (pending.size() == 0) {
              String g = auxGetPendGroup(groupPayID, Paths.get("db/pendingPayG.txt"));
              auxRemoveLine(g, Paths.get("db/pendingPayG.txt"));
-             auxAddLine(g,  Paths.get("db/GroupPayHistory.txt"));
+             auxAddLine(g,  "db/GroupPayHistory.txt");
             }
         }
 
@@ -563,7 +644,7 @@ public class TrokosServer {
                 if (s[1].equals(groupID)) {return "ERROR: group already exists";}
             }
             String g = clientID+":"+groupID;
-            auxAddLine(g, Paths.get("db/UserGroups.txt"));
+            auxAddLine(g, "db/UserGroups.txt");
             return "Group created";
         }
 
@@ -637,12 +718,12 @@ public class TrokosServer {
 
             String gUID = UUID.randomUUID().toString();
             String request = groupID+":"+amount+":"+gUID;
-            auxAddLine(request, Paths.get("db/pendingPayG.txt"));
+            auxAddLine(request, "db/pendingPayG.txt");
             for (int i=2;i<s.length;i++) {
                 String mUID = UUID.randomUUID().toString();
                 String member = s[i];
                 String indivRequest = member+":"+clientID+":"+Double.toString(nr/(s.length-2))+":"+mUID+":"+gUID;
-                auxAddLine(indivRequest, Paths.get("db/pendingPayI.txt"));
+                auxAddLine(indivRequest, "db/pendingPayI.txt");
             }
             return "Created payment requests sucessfully";
         }
@@ -705,7 +786,7 @@ public class TrokosServer {
             Double newBalance = Double.parseDouble(oldBalance) + Double.parseDouble(amount);
             String oldLine = user+":"+oldBalance;
             String newLine = user+":"+Double.toString(newBalance);
-            auxReplaceLine(oldLine, newLine, Paths.get("db/UserAccounts.txt"));
+            auxReplaceLine(oldLine, newLine, Paths.get("db/UserAccounts.crypt"));
         }
 
 
@@ -715,21 +796,15 @@ public class TrokosServer {
             Double newBalance = Double.parseDouble(oldBalance) - Double.parseDouble(amount);
             String oldLine = user+":"+oldBalance;
             String newLine = user+":"+Double.toString(newBalance);
-            auxReplaceLine(oldLine, newLine, Paths.get("db/UserAccounts.txt"));
+            auxReplaceLine(oldLine, newLine, Paths.get("db/UserAccounts.crypt"));
         }
 
         // Transfer amount of balance from user1 to user2
-        // LOCK because any change to money accounts must be atomic and not overlap
-        // between threads
         private void transferBalance(String user1, String user2, String amount) {
-            userAccountsLock.lock();
             try{
                 removeBalance(user1, amount);
                 addBalance(user2, amount);
             } catch (Exception e) {e.printStackTrace();}
-            finally {
-                userAccountsLock.unlock();
-            }
         }
 
 
@@ -744,27 +819,20 @@ public class TrokosServer {
             }
         }
         
-        // LOCK
         private void auxReplaceLine(String oldL, String newL, Path Path) {
-            dbLock.lock();
             try {
-                List<String> lines = new ArrayList<>(Files.readAllLines(Path, StandardCharsets.UTF_8));
+                ArrayList<String> lines = decryptFileToLines(Path.toString(), cipher_pass);
                 for (int i = 0; i < lines.size(); i++) {
                     if (lines.get(i).equals(oldL)) {
                         lines.set(i, newL);
                         break;
                     }
                 }
-                Files.write(Path, lines, StandardCharsets.UTF_8);
+                encryptFileFromLines(Path.toString(), lines, cipher_pass);
             } catch (Exception e) {e.printStackTrace();}
-            finally {
-                dbLock.unlock();
-            }
         }
         
-        //LOCK
         private void auxRemoveLine(String line, Path Path) {
-            dbLock.lock();
             try {
                 List<String> lines = new ArrayList<>(Files.readAllLines(Path, StandardCharsets.UTF_8));
                 for (int i = 0; i < lines.size(); i++) {
@@ -775,22 +843,14 @@ public class TrokosServer {
                 }
                 Files.write(Path, lines, StandardCharsets.UTF_8);
             } catch (Exception e) {e.printStackTrace();}
-            finally {
-                dbLock.unlock();
-            }
         }
         
-        // LOCK
-        private void auxAddLine(String line, Path Path) {
-            dbLock.lock();
+        private void auxAddLine(String line, String Path) {
             try {
-                PrintWriter w = new PrintWriter(new FileWriter(Path.toString(),true));
-                w.println(line);
-                w.close();
+                ArrayList<String> lines = decryptFileToLines(Path, cipher_pass);
+                lines.add(line);
+                encryptFileFromLines(Path, lines, cipher_pass);
             } catch (Exception e) {e.printStackTrace();}
-            finally {
-                dbLock.unlock();
-            }
         }
 
         private List<String> auxGetLinesByUser(String user, Path Path) {
@@ -896,9 +956,7 @@ public class TrokosServer {
             return true;
         }
 
-        // LOCK
         private void addToBlockChain(SignedObject transaction) {
-            bcLock.lock();
             try {
                 if (BLOCK_N == 0) {
                     // create first blockchain file if none exists
@@ -936,9 +994,6 @@ public class TrokosServer {
                     }
                 }
             } catch (Exception e) {e.printStackTrace();}
-            finally {
-                bcLock.unlock();
-            }
         }
     }
 }
