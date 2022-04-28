@@ -19,6 +19,20 @@ import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.io.PrintWriter;
+import java.io.Serial;
+import java.io.Serializable;
+import java.net.Socket;
 
 import javax.crypto.Cipher;
 import javax.crypto.CipherInputStream;
@@ -37,12 +51,6 @@ import com.google.zxing.common.BitMatrix;
 
 public class TrokosServer {
 
-    private static byte[] generateSalt(){
-        SecureRandom sr = new SecureRandom();
-        byte[] sal = new byte[8];
-        sr.nextBytes(sal);
-        return sal;
-    }
     long BLOCK_N = 0;
     static PrivateKey privK;
     static PublicKey pubK;
@@ -99,12 +107,6 @@ public class TrokosServer {
             pendingPayG.createNewFile();
             groupPayHistory.createNewFile();
             pendingPayQR.createNewFile();
-            //cifrar com PBE e AES de 128bits
-            //salt aleatorio com secure random
-            byte[] salt = generateSalt();
-            PBEKeySpec keySpec = new PBEKeySpec(cipher_pass.toCharArray(), salt, 20);
-            SecretKeyFactory factory = SecretKeyFactory.getInstance("PBEWithHmacSHA256AndAES_128");
-            SecretKey key = factory.generateSecret(keySpec);
 
             server.initBlockchain();
             
@@ -246,13 +248,11 @@ public class TrokosServer {
 
         private Socket clientCon = null;
         private String clientHost = null;
-        private SecretKey key = null;
         private Lock dbLock;
 
         ServerThread(Socket inSoc, String cHost, Lock dblock) {
             clientCon = inSoc; 
             clientHost = cHost;
-            this.key = key;
             dbLock = dblock;
         }
  
@@ -265,8 +265,6 @@ public class TrokosServer {
                 String userID = (String)inStream.readObject();
                 Long nonce = new Random().nextLong();
                 outStream.writeObject(nonce);
-                Cipher c = Cipher.getInstance("PBEWithHmacSHA256AndAES_128");
-                c.init(Cipher.ENCRYPT_MODE,this.key);
                 
                 if (!auxUserExists(userID)) {
                     // Create new User
