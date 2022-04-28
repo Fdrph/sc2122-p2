@@ -46,35 +46,35 @@ public class Trokos {
             InputStream keyStoreData = new FileInputStream(keyStorePath);
             KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
             ks.load(keyStoreData, pass_keyStore.toCharArray());
-            Certificate cert = ks.getCertificate("trokosclient");
-            PrivateKey privK = (PrivateKey) ks.getKey("trokosclient", pass_keyStore.toCharArray());
-            Signature sig = Signature.getInstance("SHA256withRSA");
+            final Certificate cert = ks.getCertificate("trokosclient");
+            final PrivateKey privK = (PrivateKey) ks.getKey("trokosclient", pass_keyStore.toCharArray());
+            final Signature sig = Signature.getInstance("SHA256withRSA");
 
             // Establish connection
             SocketFactory sf = SSLSocketFactory.getDefault();
             SSLSocket serverCon = (SSLSocket) sf.createSocket(ip, Integer.parseInt(port));
             Scanner scan = new Scanner(System.in);
-            ObjectOutputStream outStream = new ObjectOutputStream(serverCon.getOutputStream());
-            ObjectInputStream inStream = new ObjectInputStream(serverCon.getInputStream());
+            final ObjectOutputStream serverOut = new ObjectOutputStream(serverCon.getOutputStream());
+            final ObjectInputStream serverIn = new ObjectInputStream(serverCon.getInputStream());
             Runtime.getRuntime().addShutdownHook(new Thread(() -> { 
                 try {serverCon.close();scan.close();} catch (IOException e) {e.printStackTrace();}
             }));
 
             // Attempt authentication with server
             System.out.println("Attempting to authenticate with server...");
-            outStream.writeObject(userID);
+            serverOut.writeObject(userID);
 
-            Long nonce = (Long) inStream.readObject();
-            Boolean userExists = (Boolean) inStream.readObject();
+            Long nonce = (Long) serverIn.readObject();
+            Boolean userExists = (Boolean) serverIn.readObject();
 
             SignedObject signedNonce = new SignedObject(nonce, privK, sig);
             if (!userExists) {
-                outStream.writeObject(cert);
+                serverOut.writeObject(cert);
             } 
-            outStream.writeObject(signedNonce);
+            serverOut.writeObject(signedNonce);
 
             // Server response
-            String response = (String) inStream.readObject();
+            String response = (String) serverIn.readObject();
             String[] s = response.split(":");
             if (s[0].equals("FAILURE")) {
                 System.out.println(s[1]);
@@ -94,13 +94,13 @@ public class Trokos {
                 switch (command[0]) {
                     case "o":
                     case "obtainQRcode":
-                        outStream.writeObject(command);
-                        String r = (String)inStream.readObject();
+                        serverOut.writeObject(command);
+                        String r = (String)serverIn.readObject();
                         if (r.equals("ERROR")) {
-                            System.out.println(delim+(String)inStream.readObject());
+                            System.out.println(delim+(String)serverIn.readObject());
                         } else {
-                            String imgstr = (String)inStream.readObject();
-                            String code = (String)inStream.readObject();
+                            String imgstr = (String)serverIn.readObject();
+                            String code = (String)serverIn.readObject();
                             byte[] bytes = Base64.getDecoder().decode(imgstr);
                             Files.write(Paths.get(code+".png"), bytes);
                             System.out.println(delim+"Success! QRcode image created in this folder"+delim);
@@ -108,53 +108,51 @@ public class Trokos {
                         break;
                     case "m":
                     case "makepayment":
-                        outStream.writeObject(command);
+                        serverOut.writeObject(command);
                         String[] t_array = Arrays.copyOfRange(command, 1, command.length);
-                        // receiver:amount:sender
+                        // String transaction = "receiver:amount:sender"
                         String transaction = String.join(":", t_array) + ":" + userID;
                         SignedObject signed_t = new SignedObject(transaction, privK, sig);
 
-                        outStream.writeObject(signed_t);
-                        System.out.println(delim+(String)inStream.readObject()+delim);
+                        serverOut.writeObject(signed_t);
+                        System.out.println(delim+(String)serverIn.readObject()+delim);
                         break;
                     case "p":
                     case "payrequest":
                         String[] getreq = {"getrequest", command[1]};
-                        outStream.writeObject(getreq);
-                        String ansr = (String) inStream.readObject();
+                        serverOut.writeObject(getreq);
+                        String ansr = (String) serverIn.readObject();
                         String[] splt = ansr.split(":");
                         if (splt[0].equals("ERROR")) {
                             System.out.println(delim+splt[1]+delim);
                         } else {
-                            outStream.writeObject(command);
-                            // receiver:amount:sender
+                            serverOut.writeObject(command);
                             transaction = ansr+":"+userID;
                             signed_t = new SignedObject(transaction, privK, sig);
 
-                            outStream.writeObject(signed_t);
-                            System.out.println(delim+(String)inStream.readObject()+delim);
+                            serverOut.writeObject(signed_t);
+                            System.out.println(delim+(String)serverIn.readObject()+delim);
                         }
                     case "c":
                     case "confirmQRcode":
                         String[] getqrreq = {"getrequestQR", command[1]};
-                        outStream.writeObject(getqrreq);
-                        String asr = (String) inStream.readObject();
+                        serverOut.writeObject(getqrreq);
+                        String asr = (String) serverIn.readObject();
                         String[] sp = asr.split(":");
                         if (sp[0].equals("ERROR")) {
                             System.out.println(delim+sp[1]+delim);
                         } else {
-                            outStream.writeObject(command);
-                            // receiver:amount:sender
+                            serverOut.writeObject(command);
                             transaction = asr+":"+userID;
                             signed_t = new SignedObject(transaction, privK, sig);
 
-                            outStream.writeObject(signed_t);
-                            System.out.println(delim+(String)inStream.readObject()+delim);
+                            serverOut.writeObject(signed_t);
+                            System.out.println(delim+(String)serverIn.readObject()+delim);
                         }
                         break;
                     default:
-                        outStream.writeObject(command);
-                        System.out.println(delim+(String)inStream.readObject()+delim);
+                        serverOut.writeObject(command);
+                        System.out.println(delim+(String)serverIn.readObject()+delim);
                 }
             }
 

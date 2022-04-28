@@ -1,10 +1,11 @@
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.security.PrivateKey;
+import java.security.PublicKey;
 import java.security.Signature;
 import java.security.SignedObject;
 import java.security.cert.Certificate;
@@ -45,6 +46,7 @@ public class TrokosServer {
 
     long BLOCK_N = 0;
     static PrivateKey privK;
+    static PublicKey pubK;
     static Signature sig;
 
     public static void main(String[] args) {
@@ -64,16 +66,20 @@ public class TrokosServer {
         TrokosServer server = new TrokosServer();
         
         try {
+            // Load keystore, cert and keys
             InputStream keyStoreData = new FileInputStream(keyStorePath);
             KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
             ks.load(keyStoreData, pass_keyStore.toCharArray());
             privK = (PrivateKey) ks.getKey("trokosserver", pass_keyStore.toCharArray());
+            Certificate cert = ks.getCertificate("trokosserver");
+            pubK = cert.getPublicKey();
             sig = Signature.getInstance("SHA256withRSA");
 
             // reentrant allows us to lock nested methods with no deadlocks
             // which is useful to avoid having to create a lock for each method 
             Lock dbLock = new ReentrantLock();
             Lock uaLock = new ReentrantLock();
+            Lock bcLock = new ReentrantLock();
             ServerSocketFactory ssf = SSLServerSocketFactory.getDefault();
             final SSLServerSocket sSocket = (SSLServerSocket) ssf.createServerSocket(serverPort);
 
@@ -98,23 +104,70 @@ public class TrokosServer {
 
             server.initBlockchain();
 
+            System.out.println("Listening for clients:");
             while(true) {
                 Socket inSoc = sSocket.accept();
                 String clientHost = inSoc.getInetAddress().getHostAddress();
                 System.out.println("Client Connected: " + clientHost);
-                ServerThread newServerThread = server.new ServerThread(inSoc, clientHost, dbLock, uaLock);
+                ServerThread newServerThread = server.new ServerThread(inSoc, clientHost, dbLock, uaLock, bcLock);
                 newServerThread.start();
             }
         } catch (Exception e) {e.printStackTrace();}
     }
 
-    public void initBlockchain() {
-        // check how many blocks we have and set BLOCK_N
 
-        // go from block 1 to BLOCK_N
-            // check if signature matches
-            // check if hash matches last block
+    public void initBlockchain() {
+        long n_blocks = 0;
+        boolean notfound = true;
+
+        while (notfound) {
+            n_blocks++;
+            // check if file exists
+            File bf = new File("db/block_"+n_blocks+".blk");
+            if (bf.isFile()) {
+                if (!isBlockValid("db/block_"+n_blocks+".blk", n_blocks)) {
+                    System.out.println("!!! BLOCKCHAIN VALIDATION ERROR IN BLOCK "+n_blocks+" !!!");
+                    return;
+                }
+            } else {
+                notfound = false;
+                n_blocks--;
+            }
+        }
+        BLOCK_N = n_blocks;
+        if (BLOCK_N == 0) {System.out.println("No previous transaction blockchain found");}
+        else {System.out.println("Transaction blockchain succesfully validated");}
     }
+    
+
+    public boolean isBlockValid(String blockPath, long b_n) {
+        try {
+            // check if signature is correct
+            ObjectInputStream objin = new ObjectInputStream(new FileInputStream(blockPath));
+            SignedObject block = (SignedObject) objin.readObject();
+            objin.close();
+            if(!block.verify(pubK, sig)) {return false;}
+            if (b_n > 1) {
+                // check if hash matches last block's
+                Block b = (Block) block.getObject();
+                byte[] h = b.hash;
+                byte[] last_h = getFileHash("db/block_"+(b_n-1)+".blk");
+                if (last_h == null) {return false;}
+                if (!Arrays.equals(h, last_h)) {return false;}
+            }
+        } catch (Exception e ) {e.printStackTrace(); return false;}
+        return true;
+    }
+
+
+    public byte[] getFileHash(String filePath) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                .digest(Files.readAllBytes(Paths.get(filePath)));
+            return hash;
+        } catch (Exception e) {e.printStackTrace(); return null;}
+    }
+
 
     public static byte[] createQR(String data, int height, int width) {
         try {
@@ -137,12 +190,14 @@ public class TrokosServer {
         private Socket clientCon = null;
         private String clientHost = null;
         private Lock dbLock;
+        private Lock bcLock;
         private Lock userAccountsLock;
 
-        ServerThread(Socket inSoc, String cHost, Lock dblock, Lock uaLock) {
+        ServerThread(Socket inSoc, String cHost, Lock dblock, Lock uaLock, Lock bclock) {
             clientCon = inSoc; 
             clientHost = cHost;
             dbLock = dblock;
+            bcLock = bclock;
             userAccountsLock = uaLock;
         }
  
@@ -355,8 +410,8 @@ public class TrokosServer {
                 }
                 transferBalance(clientID, receiver, amount);
                 auxRemoveLine(entry,  Paths.get("db/pendingPayQR.txt"));
-                // TODO: Add to blockchain
-                // 
+                addToBlockChain(transaction);
+
                 return "Payment made to "+receiver+" of "+amount+" successfully";
             } catch (Exception e) {e.printStackTrace(); return "ERROR: Exception error";}
             finally {
@@ -399,7 +454,6 @@ public class TrokosServer {
                 }
 
                 transferBalance(clientID, userID, amount);
-                // TODO: Add to blockchain
                 addToBlockChain(transaction);
 
                 return "Payment made successfully";
@@ -476,10 +530,10 @@ public class TrokosServer {
                         }
                         transferBalance(clientID, s[1], amount.toString());
                         auxRemoveLine(request, Paths.get("db/pendingPayI.txt"));
+                        addToBlockChain(transaction);
                         // update group payment system if needed
                         if (s.length == 5) {updateGroupPay(s[4]);}
-                        // TODO: Add to blockchain
-                        //
+
                         return "Payment made successfully";
                     }
                 }
@@ -665,6 +719,8 @@ public class TrokosServer {
         }
 
         // Transfer amount of balance from user1 to user2
+        // LOCK because any change to money accounts must be atomic and not overlap
+        // between threads
         private void transferBalance(String user1, String user2, String amount) {
             userAccountsLock.lock();
             try{
@@ -828,68 +884,60 @@ public class TrokosServer {
             } catch (Exception e) {e.printStackTrace();}
         }
 
-        // transaction: "receiver:amount:sender"
+        // String transaction = "receiver:amount:sender"
         private Boolean validateTransaction(SignedObject transaction) {
             try {
                 String ts = (String) transaction.getObject();
                 String client = ts.split(":")[2];
                 Certificate userCert = auxGetUserCert(client);
                 if (userCert == null) {return false;}
-                Signature s = Signature.getInstance("SHA256withRSA");
-                if (!transaction.verify(userCert.getPublicKey(), s)) {
-                    return false;
-                }
+                if (!transaction.verify(userCert.getPublicKey(), sig)) {return false;}
             } catch (Exception e) {e.printStackTrace(); return false;}
             return true;
         }
 
+        // LOCK
         private void addToBlockChain(SignedObject transaction) {
-            dbLock.lock();
+            bcLock.lock();
             try {
                 if (BLOCK_N == 0) {
-                    // create first blockchain file
-                    List<SignedObject> t_list = new ArrayList<>(Arrays.asList(transaction));
-                    Block b1 = new Block( new byte[32], 1, t_list);
+                    // create first blockchain file if none exists
+                    Block b1 = new Block( new byte[32], 1, new ArrayList<>(Arrays.asList(transaction)));
                     SignedObject block_1 = new SignedObject(b1, privK, sig);
-                    FileOutputStream fout = new FileOutputStream("db/block_1.blk");
-                    ObjectOutputStream oos = new ObjectOutputStream(fout);
-                    oos.writeObject(block_1);
-                    fout.close();
-                    oos.close();
-
+                    ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream("db/block_1.blk"));
+                    out.writeObject(block_1);
+                    out.close();
+                    BLOCK_N++;
                 } else {
-                    // add to lastest blockchain file
-                    FileInputStream filein = new FileInputStream("db/block_1.blk");
-                    ObjectInputStream objin = new ObjectInputStream(filein);
-                    SignedObject block = (SignedObject) objin.readObject();
+                    // open current latest block
+                    ObjectInputStream in = new ObjectInputStream(new FileInputStream("db/block_"+BLOCK_N+".blk"));
+                    SignedObject block = (SignedObject) in.readObject();
+                    in.close();
                     Block b = (Block) block.getObject();
-                    filein.close();
-                    objin.close();
 
-                    b.addTransaction(transaction);
-
-                    SignedObject blk_signObj = new SignedObject(b, privK, sig);
-                    FileOutputStream fout = new FileOutputStream("db/block_1.blk");
-                    ObjectOutputStream oos = new ObjectOutputStream(fout);
-                    oos.writeObject(blk_signObj);
-                    fout.close();
-                    oos.close();
+                    if (b.n_transactions < 5) {
+                        // add latest transaction to block
+                        b.addTransaction(transaction);
+                        // sign it and save it
+                        SignedObject b_signed = new SignedObject(b, privK, sig);
+                        ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream("db/block_"+BLOCK_N+".blk"));
+                        out.writeObject(b_signed);
+                        out.close();
+                    } else {
+                        BLOCK_N++;
+                        byte[] last_h = getFileHash("db/block_"+(BLOCK_N-1)+".blk");
+                        // create new block with last hash as header and first transaction
+                        Block new_b = new Block(last_h, BLOCK_N, new ArrayList<>(Arrays.asList(transaction)));
+                        // sign it and save it
+                        SignedObject b_signed = new SignedObject(new_b, privK, sig);
+                        ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream("db/block_"+BLOCK_N+".blk"));
+                        out.writeObject(b_signed);
+                        out.close();
+                    }
                 }
-
-                //open and check?
-                FileInputStream filein = new FileInputStream("db/block_1.blk");
-                ObjectInputStream objin = new ObjectInputStream(filein);
-                SignedObject block = (SignedObject) objin.readObject();
-                Block b = (Block) block.getObject();
-                SignedObject t1 = b.transactions.get((int) BLOCK_N);
-                System.out.println((String)t1.getObject()); // it works!
-                filein.close();
-                objin.close();
-
             } catch (Exception e) {e.printStackTrace();}
             finally {
-                BLOCK_N++;
-                dbLock.unlock();
+                bcLock.unlock();
             }
         }
     }
@@ -908,12 +956,12 @@ final class Block implements Serializable {
     Block(byte[] hash, long b_n, List<SignedObject> transactions) {
         this.hash = hash;
         this.b_number = b_n;
-        this.n_transactions = transactions.size();
+        this.n_transactions = 1;
         this.transactions = transactions;
     }
 
     public void addTransaction(SignedObject tr) {
         transactions.add(tr);
-        n_transactions = transactions.size();
+        n_transactions++;
     }
 }
