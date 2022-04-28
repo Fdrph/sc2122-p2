@@ -91,11 +91,31 @@ public class TrokosServer {
                 try {sSocket.close();} catch (IOException e) {e.printStackTrace();}
             }});
 
-            // TODO: MAKE ALL THESE USE NEW ENCRYPTED FILES
-            File userData = new File("db/UserData.txt");
+
+            if (!new File("db/UserData.txt").isFile()) {
+                encryptFileFromLines("db/UserData.txt", new ArrayList<String>(), cipher_pass);
+            }
             if (!new File("db/UserAccounts.crypt").isFile()) {
                 encryptFileFromLines("db/UserAccounts.crypt", new ArrayList<String>(), cipher_pass);
             }
+            if (!new File("db/UserGroups.txt").isFile()) {
+                encryptFileFromLines("db/UserGroups.txt", new ArrayList<String>(), cipher_pass);
+            }
+            if (!new File("db/pendingPayI.txt").isFile()) {
+                encryptFileFromLines("db/pendingPayI.txt", new ArrayList<String>(), cipher_pass);
+            }
+            if (!new File("db/pendingPayG.txt").isFile()) {
+                encryptFileFromLines("db/pendingPayG.txt", new ArrayList<String>(), cipher_pass);
+            }
+            if (!new File("db/GroupPayHistory.txt").isFile()) {
+                encryptFileFromLines("db/GroupPayHistory.txt", new ArrayList<String>(), cipher_pass);
+            }
+            if (!new File("db/pendingPayQR.txt").isFile()) {
+                encryptFileFromLines("db/pendingPayQR.txt", new ArrayList<String>(), cipher_pass);
+            }
+
+            // TODO: MAKE ALL THESE USE NEW ENCRYPTED FILES
+            File userData = new File("db/UserData.txt");
             File userGroups = new File("db/UserGroups.txt");
             File pendingPayI = new File("db/pendingPayI.txt");
             File pendingPayG = new File("db/pendingPayG.txt");
@@ -110,8 +130,6 @@ public class TrokosServer {
 
             server.initBlockchain();
             
-            
-
             System.out.println("Listening for clients:");
             while(true) {
                 Socket inSoc = sSocket.accept();
