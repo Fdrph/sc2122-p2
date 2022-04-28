@@ -7,6 +7,7 @@ import java.net.ConnectException;
 import java.net.SocketException;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.NoSuchElementException;
 import java.util.Scanner;
@@ -21,6 +22,8 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
 public class Trokos {
+
+    static final String delim = System.lineSeparator();
 
     public static void main(String[] args) {
         if (args.length != 5) {
@@ -39,12 +42,13 @@ public class Trokos {
         System.setProperty("javax.net.ssl.trustStore", trustStorePath);
 
         try {
-            // Load keystore, cert and keys
+            // Load keystore, cert and key
             InputStream keyStoreData = new FileInputStream(keyStorePath);
             KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
             ks.load(keyStoreData, pass_keyStore.toCharArray());
             Certificate cert = ks.getCertificate("trokosclient");
-            PrivateKey pk = (PrivateKey) ks.getKey("trokosclient", pass_keyStore.toCharArray());
+            PrivateKey privK = (PrivateKey) ks.getKey("trokosclient", pass_keyStore.toCharArray());
+            Signature sig = Signature.getInstance("SHA256withRSA");
 
             // Establish connection
             SocketFactory sf = SSLSocketFactory.getDefault();
@@ -63,7 +67,7 @@ public class Trokos {
             Long nonce = (Long) inStream.readObject();
             Boolean userExists = (Boolean) inStream.readObject();
 
-            SignedObject signedNonce = new SignedObject(nonce, pk, Signature.getInstance("SHA256withRSA"));
+            SignedObject signedNonce = new SignedObject(nonce, privK, sig);
             if (!userExists) {
                 outStream.writeObject(cert);
             } 
@@ -80,7 +84,6 @@ public class Trokos {
             }
 
 
-
             // Main commands loop
             showCommands();
             while(true) {
@@ -88,26 +91,71 @@ public class Trokos {
                 String input = scan.nextLine();
                 String[] command = input.split(" ");
 
-                if (command[0].equals("o") || command[0].equals("obtainQRcode")) {
-                    outStream.writeObject(command);
-                    String r = (String)inStream.readObject();
-                    if (r.equals("ERROR")) {
-                        System.out.println();
-                        System.out.println((String)inStream.readObject());
-                    } else {
-                        String imgstr = (String)inStream.readObject();
-                        String code = (String)inStream.readObject();
-                        byte[] bytes = Base64.getDecoder().decode(imgstr);
-                        Files.write(Paths.get(code+".png"), bytes);
-                        System.out.println();
-                        System.out.println("Success! QRcode image created in this folder");
-                    }
-                } else {
-                    outStream.writeObject(command);
-                    System.out.println();
-                    System.out.println((String)inStream.readObject());
+                switch (command[0]) {
+                    case "o":
+                    case "obtainQRcode":
+                        outStream.writeObject(command);
+                        String r = (String)inStream.readObject();
+                        if (r.equals("ERROR")) {
+                            System.out.println(delim+(String)inStream.readObject());
+                        } else {
+                            String imgstr = (String)inStream.readObject();
+                            String code = (String)inStream.readObject();
+                            byte[] bytes = Base64.getDecoder().decode(imgstr);
+                            Files.write(Paths.get(code+".png"), bytes);
+                            System.out.println(delim+"Success! QRcode image created in this folder"+delim);
+                        }
+                        break;
+                    case "m":
+                    case "makepayment":
+                        outStream.writeObject(command);
+                        String[] t_array = Arrays.copyOfRange(command, 1, command.length);
+                        // receiver:amount:sender
+                        String transaction = String.join(":", t_array) + ":" + userID;
+                        SignedObject signed_t = new SignedObject(transaction, privK, sig);
+
+                        outStream.writeObject(signed_t);
+                        System.out.println(delim+(String)inStream.readObject()+delim);
+                        break;
+                    case "p":
+                    case "payrequest":
+                        String[] getreq = {"getrequest", command[1]};
+                        outStream.writeObject(getreq);
+                        String ansr = (String) inStream.readObject();
+                        String[] splt = ansr.split(":");
+                        if (splt[0].equals("ERROR")) {
+                            System.out.println(delim+splt[1]+delim);
+                        } else {
+                            outStream.writeObject(command);
+                            // receiver:amount:sender
+                            transaction = ansr+":"+userID;
+                            signed_t = new SignedObject(transaction, privK, sig);
+
+                            outStream.writeObject(signed_t);
+                            System.out.println(delim+(String)inStream.readObject()+delim);
+                        }
+                    case "c":
+                    case "confirmQRcode":
+                        String[] getqrreq = {"getrequestQR", command[1]};
+                        outStream.writeObject(getqrreq);
+                        String asr = (String) inStream.readObject();
+                        String[] sp = asr.split(":");
+                        if (sp[0].equals("ERROR")) {
+                            System.out.println(delim+sp[1]+delim);
+                        } else {
+                            outStream.writeObject(command);
+                            // receiver:amount:sender
+                            transaction = asr+":"+userID;
+                            signed_t = new SignedObject(transaction, privK, sig);
+
+                            outStream.writeObject(signed_t);
+                            System.out.println(delim+(String)inStream.readObject()+delim);
+                        }
+                        break;
+                    default:
+                        outStream.writeObject(command);
+                        System.out.println(delim+(String)inStream.readObject()+delim);
                 }
-                System.out.println();
             }
 
         } catch (Exception e) {
@@ -125,7 +173,7 @@ public class Trokos {
     }
 
     static public void showCommands() {
-        System.out.println(System.lineSeparator()+"Comandos disponíveis:"+System.lineSeparator());
+        System.out.println(delim+"Comandos disponíveis:"+delim);
         System.out.println("   -balance");
         System.out.println("      obtém valor atual do saldo da sua conta.");
         System.out.println("   -makepayment <userID> <amount>");
@@ -154,9 +202,6 @@ public class Trokos {
         System.out.println("      mostra uma lista dos grupos de que o");
         System.out.println("      cliente é dono, e uma lista dos");
         System.out.println("      grupos a que pertence.");
-        System.out.println("   -addu <userID> <groupID>");
-        System.out.println("      adiciona o utilizador userID como");
-        System.out.println("      membro do grupo indicado.");
         System.out.println("   -dividepayment <groupID> <amount>");
         System.out.println("      cria um pedido de pagamento de grupo, cujo valor");
         System.out.println("      total amount deve ser dividido pelos");
