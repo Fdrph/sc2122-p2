@@ -33,6 +33,8 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 import javax.crypto.Cipher;
+import javax.crypto.CipherInputStream;
+import javax.crypto.CipherOutputStream;
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
@@ -114,25 +116,13 @@ public class TrokosServer {
             SecretKeyFactory factory = SecretKeyFactory.getInstance("PBEWithHmacSHA256AndAES_128");
             SecretKey key = factory.generateSecret(keySpec);
 
-            Cipher c = Cipher.getInstance("PBEWithHmacSHA256AndAES_128");
-            c.init(Cipher.ENCRYPT_MODE,key);
-            //cifrar os ficheiros todos
-            // FileInputStream udis = new FileInputStream(userData);
-            // FileInputStream uais = new FileInputStream(userAccounts);
-            // FileInputStream ugis = new FileInputStream(userGroups);
-            // FileInputStream ppis = new FileInputStream(pendingPayI);
-            // FileInputStream pgis = new FileInputStream(pendingPayG);
-            // FileInputStream ghis= new FileInputStream( groupPayHistory);
-            // FileInputStream pqris = new FileInputStream (pendingPayQR);
-            
-
             server.initBlockchain();
 
             while(true) {
                 Socket inSoc = sSocket.accept();
                 String clientHost = inSoc.getInetAddress().getHostAddress();
                 System.out.println("Client Connected: " + clientHost);
-                ServerThread newServerThread = server.new ServerThread(inSoc, clientHost, dbLock, uaLock);
+                ServerThread newServerThread = server.new ServerThread(inSoc, clientHost,key, dbLock, uaLock);
                 newServerThread.start();
             }
         } catch (Exception e) {e.printStackTrace();}
@@ -166,12 +156,14 @@ public class TrokosServer {
 
         private Socket clientCon = null;
         private String clientHost = null;
+        private SecretKey key = null;
         private Lock dbLock;
         private Lock userAccountsLock;
 
-        ServerThread(Socket inSoc, String cHost, Lock dblock, Lock uaLock) {
+        ServerThread(Socket inSoc, String cHost, SecretKey key, Lock dblock, Lock uaLock) {
             clientCon = inSoc; 
             clientHost = cHost;
+            this.key = key;
             dbLock = dblock;
             userAccountsLock = uaLock;
         }
@@ -185,6 +177,8 @@ public class TrokosServer {
                 String userID = (String)inStream.readObject();
                 Long nonce = new Random().nextLong();
                 outStream.writeObject(nonce);
+                Cipher c = Cipher.getInstance("PBEWithHmacSHA256AndAES_128");
+                c.init(Cipher.ENCRYPT_MODE,this.key);
                 
                 if (!auxUserExists(userID)) {
                     // Create new User
