@@ -1,17 +1,3 @@
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.security.Signature;
-import java.security.SignedObject;
-import java.security.cert.Certificate;
-import java.security.cert.CertificateFactory;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.List;
-import java.util.Random;
-import java.util.UUID;
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.File;
@@ -23,6 +9,26 @@ import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.io.PrintWriter;
 import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.SecureRandom;
+import java.security.Signature;
+import java.security.SignedObject;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.List;
+import java.util.Random;
+import java.util.UUID;
+
+import javax.crypto.Cipher;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 import javax.net.ServerSocketFactory;
 import javax.net.ssl.SSLServerSocket;
 import javax.net.ssl.SSLServerSocketFactory;
@@ -33,6 +39,13 @@ import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
 
 public class TrokosServer {
+
+    private static byte[] generateSalt(){
+        SecureRandom sr = new SecureRandom();
+        byte[] sal = new byte[8];
+        sr.nextBytes(sal);
+        return sal;
+    }
 
     public static void main(String[] args) {
         int serverPort = 45678;
@@ -51,6 +64,8 @@ public class TrokosServer {
         TrokosServer server = new TrokosServer();
 
         try {
+            
+            
             ServerSocketFactory ssf = SSLServerSocketFactory.getDefault();
             final SSLServerSocket sSocket = (SSLServerSocket) ssf.createServerSocket(serverPort);
 
@@ -72,6 +87,24 @@ public class TrokosServer {
             pendingPayG.createNewFile();
             groupPayHistory.createNewFile();
             pendingPayQR.createNewFile();
+            //cifrar com PBE e AES de 128bits
+            //salt aleatorio com secure random
+            byte[] salt = generateSalt();
+            PBEKeySpec keySpec = new PBEKeySpec(cipher_pass.toCharArray(), salt, 20);
+            SecretKeyFactory factory = SecretKeyFactory.getInstance("PBEWithHmacSHA256AndAES_128");
+            SecretKey key = factory.generateSecret(keySpec);
+
+            Cipher c = Cipher.getInstance("PBEWithHmacSHA256AndAES_128");
+            c.init(Cipher.ENCRYPT_MODE,key);
+            //cifrar os ficheiros todos
+            // FileInputStream udis = new FileInputStream(userData);
+            // FileInputStream uais = new FileInputStream(userAccounts);
+            // FileInputStream ugis = new FileInputStream(userGroups);
+            // FileInputStream ppis = new FileInputStream(pendingPayI);
+            // FileInputStream pgis = new FileInputStream(pendingPayG);
+            // FileInputStream ghis= new FileInputStream( groupPayHistory);
+            // FileInputStream pqris = new FileInputStream (pendingPayQR);
+            
             while(true) {
                 Socket inSoc = sSocket.accept();
                 String clientHost = inSoc.getInetAddress().getHostAddress();
