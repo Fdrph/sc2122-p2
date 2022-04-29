@@ -88,6 +88,8 @@ public class TrokosServer {
                 try {sSocket.close();} catch (IOException e) {e.printStackTrace();}
             }});
 
+            File db_dir = new File("db");
+            if (!db_dir.exists()) {db_dir.mkdir();}
 
             if (!new File("db/UserData.crypt").isFile()) {
                 encryptFileFromLines("db/UserData.crypt", new ArrayList<String>(), cipher_pass);
