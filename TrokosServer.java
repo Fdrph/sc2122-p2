@@ -24,12 +24,10 @@ import java.io.EOFException;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.io.PrintWriter;
 import java.io.Serial;
 import java.io.Serializable;
 import java.net.Socket;
@@ -92,41 +90,27 @@ public class TrokosServer {
             }});
 
 
-            if (!new File("db/UserData.txt").isFile()) {
-                encryptFileFromLines("db/UserData.txt", new ArrayList<String>(), cipher_pass);
+            if (!new File("db/UserData.crypt").isFile()) {
+                encryptFileFromLines("db/UserData.crypt", new ArrayList<String>(), cipher_pass);
             }
             if (!new File("db/UserAccounts.crypt").isFile()) {
                 encryptFileFromLines("db/UserAccounts.crypt", new ArrayList<String>(), cipher_pass);
             }
-            if (!new File("db/UserGroups.txt").isFile()) {
-                encryptFileFromLines("db/UserGroups.txt", new ArrayList<String>(), cipher_pass);
+            if (!new File("db/UserGroups.crypt").isFile()) {
+                encryptFileFromLines("db/UserGroups.crypt", new ArrayList<String>(), cipher_pass);
             }
-            if (!new File("db/pendingPayI.txt").isFile()) {
-                encryptFileFromLines("db/pendingPayI.txt", new ArrayList<String>(), cipher_pass);
+            if (!new File("db/pendingPayI.crypt").isFile()) {
+                encryptFileFromLines("db/pendingPayI.crypt", new ArrayList<String>(), cipher_pass);
             }
-            if (!new File("db/pendingPayG.txt").isFile()) {
-                encryptFileFromLines("db/pendingPayG.txt", new ArrayList<String>(), cipher_pass);
+            if (!new File("db/pendingPayG.crypt").isFile()) {
+                encryptFileFromLines("db/pendingPayG.crypt", new ArrayList<String>(), cipher_pass);
             }
-            if (!new File("db/GroupPayHistory.txt").isFile()) {
-                encryptFileFromLines("db/GroupPayHistory.txt", new ArrayList<String>(), cipher_pass);
+            if (!new File("db/GroupPayHistory.crypt").isFile()) {
+                encryptFileFromLines("db/GroupPayHistory.crypt", new ArrayList<String>(), cipher_pass);
             }
-            if (!new File("db/pendingPayQR.txt").isFile()) {
-                encryptFileFromLines("db/pendingPayQR.txt", new ArrayList<String>(), cipher_pass);
+            if (!new File("db/pendingPayQR.crypt").isFile()) {
+                encryptFileFromLines("db/pendingPayQR.crypt", new ArrayList<String>(), cipher_pass);
             }
-
-            // TODO: MAKE ALL THESE USE NEW ENCRYPTED FILES
-            File userData = new File("db/UserData.txt");
-            File userGroups = new File("db/UserGroups.txt");
-            File pendingPayI = new File("db/pendingPayI.txt");
-            File pendingPayG = new File("db/pendingPayG.txt");
-            File groupPayHistory = new File("db/GroupPayHistory.txt");
-            File pendingPayQR = new File("db/pendingPayQR.txt");
-            userData.createNewFile();
-            userGroups.createNewFile();
-            pendingPayI.createNewFile();
-            pendingPayG.createNewFile();
-            groupPayHistory.createNewFile();
-            pendingPayQR.createNewFile();
 
             server.initBlockchain();
             
@@ -231,6 +215,7 @@ public class TrokosServer {
             byte[] bytes = cyph_in.readAllBytes();
             cyph_in.close();
             String file_string = new String(bytes, StandardCharsets.UTF_8);
+            if (file_string.equals("")) {return new ArrayList<String>();}
             ArrayList<String> file_lines = new ArrayList<>(Arrays.asList(file_string.split("\\|")));
             return file_lines;
         } catch (Exception e) {e.printStackTrace(); return new ArrayList<String>();}
@@ -304,9 +289,7 @@ public class TrokosServer {
                     fo.write(clientCert.getEncoded());
                     fo.close();
 
-                    PrintWriter writer = new PrintWriter(new FileWriter("db/UserData.txt",true));
-                    writer.println(userID + ":" + userID+".cert");
-                    writer.close();
+                    auxAddLine(userID + ":" + userID+".cert", "db/UserData.crypt");
                     auxAddLine(userID + ":" + "100.0", "db/userAccounts.crypt");
 
                     outStream.writeObject("SUCCESS:New user created!");
@@ -467,7 +450,7 @@ public class TrokosServer {
             String amount = args[1];
             String qrcodeID = UUID.randomUUID().toString();
             String entry = clientID+":"+amount+":"+qrcodeID;
-            auxAddLine(entry, "db/pendingPayQR.txt");
+            auxAddLine(entry, "db/pendingPayQR.crypt");
             outStream.writeObject("SUCCESS");
             byte[] img = createQR(qrcodeID, 350, 350);
             String imgstr = Base64.getEncoder().encodeToString(img);
@@ -480,7 +463,7 @@ public class TrokosServer {
         private String getRequestInfoQR(String clientID, String[] args) {
             if (args.length != 2) {return "ERROR: Missing or wrong arguments";}
             String reqID = args[1];
-            String entry = auxGetPendGroup(reqID, Paths.get("db/pendingPayQR.txt"));
+            String entry = auxGetPendGroup(reqID, Paths.get("db/pendingPayQR.crypt"));
             if (entry.equals("")) {return "ERROR: QRCode given does not exist";}
             String[] e = entry.split(":");
             String receiver = e[0];
@@ -496,7 +479,7 @@ public class TrokosServer {
                 SignedObject transaction = (SignedObject) inStream.readObject();
                 if (args.length != 2) {return "ERROR: Missing or wrong arguments";}
                 String qrcode = args[1];
-                String entry = auxGetPendGroup(qrcode, Paths.get("db/pendingPayQR.txt"));
+                String entry = auxGetPendGroup(qrcode, Paths.get("db/pendingPayQR.crypt"));
                 if (entry.equals("")) {return "ERROR: QRCode given does not exist";}
                 String[] e = entry.split(":");
                 String receiver = e[0];
@@ -508,7 +491,7 @@ public class TrokosServer {
                     return "ERROR: Signature verification failed!";
                 }
                 transferBalance(clientID, receiver, amount);
-                auxRemoveLine(entry,  Paths.get("db/pendingPayQR.txt"));
+                auxRemoveLine(entry,  Paths.get("db/pendingPayQR.crypt"));
                 addToBlockChain(transaction);
 
                 return "Payment made to "+receiver+" of "+amount+" successfully";
@@ -567,7 +550,7 @@ public class TrokosServer {
 
             String uID = UUID.randomUUID().toString();
             String line = userID+":"+clientID+":"+nr.toString()+":"+ uID;
-            auxAddLine(line, "db/pendingPayI.txt");
+            auxAddLine(line, "db/pendingPayI.crypt");
             return "Request created sucessfully";
         }
 
@@ -578,7 +561,7 @@ public class TrokosServer {
             String nl = System.lineSeparator();
             String response = "";
 
-            List<String> requests = auxGetLinesByUser(clientID, Paths.get("db/pendingPayI.txt"));
+            List<String> requests = auxGetLinesByUser(clientID, Paths.get("db/pendingPayI.crypt"));
             if (requests.isEmpty()) {return "No pending payment requests found";}
             for (String r : requests) {
                 String[] s = r.split(":");
@@ -593,7 +576,7 @@ public class TrokosServer {
         private String getRequestInfo(String clientID, String[] args) {
             if (args.length != 2) {return "ERROR: Missing or wrong arguments";}
             String reqID = args[1];
-            List<String> requests = auxGetLinesByUser(clientID, Paths.get("db/pendingPayI.txt"));
+            List<String> requests = auxGetLinesByUser(clientID, Paths.get("db/pendingPayI.crypt"));
             if (requests.isEmpty()) {return "ERROR: You have no pending payments!";}
             for (String request: requests){
                 String[] s = request.split(":");
@@ -613,7 +596,7 @@ public class TrokosServer {
                 if (args.length != 2) {return "Missing or wrong arguments";}
                 String reqID  = args[1];
                 Double amount = 0.0;
-                List<String> requests = auxGetLinesByUser(clientID, Paths.get("db/pendingPayI.txt"));
+                List<String> requests = auxGetLinesByUser(clientID, Paths.get("db/pendingPayI.crypt"));
                 for (String request: requests){
                     String[] s = request.split(":");
                     if (s[0].equals(clientID) && s[3].equals(reqID)) {
@@ -625,7 +608,7 @@ public class TrokosServer {
                             return "ERROR: Signature verification failed!";
                         }
                         transferBalance(clientID, s[1], amount.toString());
-                        auxRemoveLine(request, Paths.get("db/pendingPayI.txt"));
+                        auxRemoveLine(request, Paths.get("db/pendingPayI.crypt"));
                         addToBlockChain(transaction);
                         // update group payment system if needed
                         if (s.length == 5) {updateGroupPay(s[4]);}
@@ -640,11 +623,11 @@ public class TrokosServer {
 
         // Check if group payment has no more pending pay requests 
         private void updateGroupPay(String groupPayID) {
-            List<String> pending = auxGetPendByGroupPendID(groupPayID, Paths.get("db/pendingPayI.txt"));
+            List<String> pending = auxGetPendByGroupPendID(groupPayID, Paths.get("db/pendingPayI.crypt"));
             if (pending.size() == 0) {
-             String g = auxGetPendGroup(groupPayID, Paths.get("db/pendingPayG.txt"));
-             auxRemoveLine(g, Paths.get("db/pendingPayG.txt"));
-             auxAddLine(g,  "db/GroupPayHistory.txt");
+             String g = auxGetPendGroup(groupPayID, Paths.get("db/pendingPayG.crypt"));
+             auxRemoveLine(g, Paths.get("db/pendingPayG.crypt"));
+             auxAddLine(g,  "db/GroupPayHistory.crypt");
             }
         }
 
@@ -653,13 +636,13 @@ public class TrokosServer {
         private String newGroup(String clientID, String[] args) {
             if (args.length != 2) {return "Missing or wrong arguments";}
             String groupID = args[1];
-            List<String> groups = auxGetLinesByUser(clientID, Paths.get("db/UserGroups.txt"));
+            List<String> groups = auxGetLinesByUser(clientID, Paths.get("db/UserGroups.crypt"));
             for (String r : groups) {
                 String[] s = r.split(":");
                 if (s[1].equals(groupID)) {return "ERROR: group already exists";}
             }
             String g = clientID+":"+groupID;
-            auxAddLine(g, "db/UserGroups.txt");
+            auxAddLine(g, "db/UserGroups.crypt");
             return "Group created";
         }
 
@@ -672,7 +655,7 @@ public class TrokosServer {
             if (!auxUserExists(userID)) {return "ERROR: User doesn't exist";}
             if (clientID.equals(userID)) {return "ERROR: Can't add yourself to your group";}
 
-            String group = auxGetGroup(groupID, Paths.get("db/UserGroups.txt"));
+            String group = auxGetGroup(groupID, Paths.get("db/UserGroups.crypt"));
             if (group.equals("")) {return "ERROR: Group doesn't exist";}
             String[] s = group.split(":");
             if (!s[0].equals(clientID)) {return "ERROR: You are not the group owner";}
@@ -680,7 +663,7 @@ public class TrokosServer {
                 if (u.equals(userID)) {return "ERROR: User already exists in group";}
             }
             String newLine = group + ":" + userID;
-            auxReplaceLine(group, newLine, Paths.get("db/UserGroups.txt"));
+            auxReplaceLine(group, newLine, Paths.get("db/UserGroups.crypt"));
             return "Added user to group";
         }
 
@@ -691,7 +674,7 @@ public class TrokosServer {
             String nl = System.lineSeparator();
             String response = "-Groups you own:" + nl + nl;
 
-            List<String> owned = auxGetLinesByUser(clientID, Paths.get("db/UserGroups.txt"));
+            List<String> owned = auxGetLinesByUser(clientID, Paths.get("db/UserGroups.crypt"));
             if (owned.size() == 0) {response += "You don't own any groups"+nl;}
             else {
                 for (String g : owned) {
@@ -704,7 +687,7 @@ public class TrokosServer {
                 }
             }
             response += nl + "-Groups you are in:"+ nl + nl;
-            List<String> in = auxGetGroupsByUser(clientID, Paths.get("db/UserGroups.txt"));
+            List<String> in = auxGetGroupsByUser(clientID, Paths.get("db/UserGroups.crypt"));
             if (in.size() == 0) {response += "You aren't in any groups";}
             else {
                 for (String g : in) {
@@ -726,19 +709,19 @@ public class TrokosServer {
             String groupID = args[1];
             String amount = args[2];
             Double nr = Double.parseDouble(amount);
-            String group = auxGetGroup(groupID, Paths.get("db/UserGroups.txt"));
+            String group = auxGetGroup(groupID, Paths.get("db/UserGroups.crypt"));
             if (group.equals("")) {return "ERROR: Group doesn't exist";}
             String[] s = group.split(":");
             if (!s[0].equals(clientID)) {return "ERROR: You are not the group owner";}
 
             String gUID = UUID.randomUUID().toString();
             String request = groupID+":"+amount+":"+gUID;
-            auxAddLine(request, "db/pendingPayG.txt");
+            auxAddLine(request, "db/pendingPayG.crypt");
             for (int i=2;i<s.length;i++) {
                 String mUID = UUID.randomUUID().toString();
                 String member = s[i];
                 String indivRequest = member+":"+clientID+":"+Double.toString(nr/(s.length-2))+":"+mUID+":"+gUID;
-                auxAddLine(indivRequest, "db/pendingPayI.txt");
+                auxAddLine(indivRequest, "db/pendingPayI.crypt");
             }
             return "Created payment requests sucessfully";
         }
@@ -750,18 +733,18 @@ public class TrokosServer {
             String groupID = args[1];
             String response = "";
             String nl = System.lineSeparator();
-            String group = auxGetGroup(groupID, Paths.get("db/UserGroups.txt"));
+            String group = auxGetGroup(groupID, Paths.get("db/UserGroups.crypt"));
             if (group.equals("")) {return "ERROR: Group doesn't exist";}
             String[] s = group.split(":");
             if (!s[0].equals(clientID)) {return "ERROR: You are not the group owner";}
 
-            List<String> pending = auxGetLinesByUser(groupID,  Paths.get("db/pendingPayG.txt"));
+            List<String> pending = auxGetLinesByUser(groupID,  Paths.get("db/pendingPayG.crypt"));
             if (pending.size() == 0) {return "No pending payments on this group";}
             for (String pp : pending) {
                 String[] el = pp.split(":");
                 response += "ID: " + el[2] + nl;
                 response += "Amount: " + el[1] + nl;
-                List<String> l = auxGetPendByGroupPendID(el[2], Paths.get("db/pendingPayI.txt"));
+                List<String> l = auxGetPendByGroupPendID(el[2], Paths.get("db/pendingPayI.crypt"));
                 for (String k : l) {
                     String[] kk = k.split(":");
                     response += kk[0] + nl;
@@ -778,12 +761,12 @@ public class TrokosServer {
             String groupID = args[1];
             String response = "";
             String nl = System.lineSeparator();
-            String group = auxGetGroup(groupID, Paths.get("db/UserGroups.txt"));
+            String group = auxGetGroup(groupID, Paths.get("db/UserGroups.crypt"));
             if (group.equals("")) {return "ERROR: Group doesn't exist";}
             String[] s = group.split(":");
             if (!s[0].equals(clientID)) {return "ERROR: You are not the group owner";}
 
-            List<String> pending = auxGetLinesByUser(groupID,  Paths.get("db/GroupPayHistory.txt"));
+            List<String> pending = auxGetLinesByUser(groupID,  Paths.get("db/GroupPayHistory.crypt"));
             if (pending.size() == 0) {return "No payment history on this group";}
             for (String pp : pending) {
                 String[] el = pp.split(":");
@@ -827,7 +810,8 @@ public class TrokosServer {
 
         private Boolean auxUserExists(String user) {
             try{
-                return Files.lines(Paths.get("db/UserData.txt")).anyMatch(l -> user.equals(l.split(":")[0]));
+                ArrayList<String> lines = decryptFileToLines("db/UserData.crypt", cipher_pass);
+                return lines.stream().anyMatch(l -> user.equals(l.split(":")[0]));
             } catch(Exception e) {
                 e.printStackTrace();
                 return false;
@@ -849,20 +833,20 @@ public class TrokosServer {
         
         private void auxRemoveLine(String line, Path Path) {
             try {
-                List<String> lines = new ArrayList<>(Files.readAllLines(Path, StandardCharsets.UTF_8));
+                ArrayList<String> lines = decryptFileToLines(Path.toString(), cipher_pass);
                 for (int i = 0; i < lines.size(); i++) {
                     if (lines.get(i).equals(line)) {
                         lines.remove(i);
                         break;
                     }
                 }
-                Files.write(Path, lines, StandardCharsets.UTF_8);
+                encryptFileFromLines(Path.toString(), lines, cipher_pass);
             } catch (Exception e) {e.printStackTrace();}
         }
         
         private void auxAddLine(String line, String Path) {
             try {
-                ArrayList<String> lines = decryptFileToLines(Path, cipher_pass);
+                ArrayList<String> lines = decryptFileToLines(Path.toString(), cipher_pass);
                 lines.add(line);
                 encryptFileFromLines(Path, lines, cipher_pass);
             } catch (Exception e) {e.printStackTrace();}
@@ -870,7 +854,7 @@ public class TrokosServer {
 
         private List<String> auxGetLinesByUser(String user, Path Path) {
             try {
-                ArrayList<String> lines = new ArrayList<>(Files.readAllLines(Path, StandardCharsets.UTF_8));
+                ArrayList<String> lines = decryptFileToLines(Path.toString(), cipher_pass);
                 ArrayList<String> filteredLines = new ArrayList<String>();
                 for (int i = 0; i < lines.size(); i++) {
                     if (lines.get(i).split(":")[0].equals(user)) {
@@ -884,7 +868,7 @@ public class TrokosServer {
 
         private String auxGetGroup(String groupID, Path Path) {
             try {
-                ArrayList<String> lines = new ArrayList<>(Files.readAllLines(Path, StandardCharsets.UTF_8));
+                ArrayList<String> lines = decryptFileToLines(Path.toString(), cipher_pass);
                 for (int i = 0; i < lines.size(); i++) {
                     if (lines.get(i).split(":")[1].equals(groupID)) {
                         return lines.get(i);
@@ -896,7 +880,7 @@ public class TrokosServer {
 
         private String auxGetPendGroup(String groupPendID, Path Path) {
             try {
-                ArrayList<String> lines = new ArrayList<>(Files.readAllLines(Path, StandardCharsets.UTF_8));
+                ArrayList<String> lines = decryptFileToLines(Path.toString(), cipher_pass);
                 for (int i = 0; i < lines.size(); i++) {
                     if (lines.get(i).split(":")[2].equals(groupPendID)) {
                         return lines.get(i);
@@ -908,11 +892,12 @@ public class TrokosServer {
 
         private List<String> auxGetGroupsByUser(String user, Path Path) {
             try {
-                ArrayList<String> lines = new ArrayList<>(Files.readAllLines(Path, StandardCharsets.UTF_8));
+                ArrayList<String> lines = decryptFileToLines(Path.toString(), cipher_pass);
                 ArrayList<String> filteredLines = new ArrayList<String>();
                 for (int i = 0; i < lines.size(); i++) {
-                    List<String> strlist  = new ArrayList<String>(Arrays.asList(lines.get(i).split(":")));
-                    strlist.remove(0);strlist.remove(0);
+                    ArrayList<String> strlist  = new ArrayList<String>(Arrays.asList(lines.get(i).split(":")));
+                    strlist.remove(0);
+                    strlist.remove(0);
                     if (strlist.contains(user)) {
                         filteredLines.add(lines.get(i));
                     }
@@ -924,7 +909,7 @@ public class TrokosServer {
 
         private List<String> auxGetPendByGroupPendID(String id, Path Path) {
             try {
-                ArrayList<String> lines = new ArrayList<>(Files.readAllLines(Path, StandardCharsets.UTF_8));
+                ArrayList<String> lines = decryptFileToLines(Path.toString(), cipher_pass);
                 ArrayList<String> filteredLines = new ArrayList<String>();
                 for (int i = 0; i < lines.size(); i++) {
                     List<String> strlist  = new ArrayList<String>(Arrays.asList(lines.get(i).split(":")));
@@ -939,7 +924,8 @@ public class TrokosServer {
 
         private Certificate auxGetUserCert(String userID) {
             try{
-                String userdata = Files.lines(Paths.get("db/UserData.txt"))
+                ArrayList<String> lines = decryptFileToLines("db/UserData.crypt", cipher_pass);
+                String userdata = lines.stream()
                     .filter(l -> l.split(":")[0]
                     .equals(userID))
                     .findFirst().orElse("");

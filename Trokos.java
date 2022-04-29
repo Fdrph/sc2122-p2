@@ -133,6 +133,7 @@ public class Trokos {
                             serverOut.writeObject(signed_t);
                             System.out.println(delim+(String)serverIn.readObject()+delim);
                         }
+                        break;
                     case "c":
                     case "confirmQRcode":
                         String[] getqrreq = {"getrequestQR", command[1]};
