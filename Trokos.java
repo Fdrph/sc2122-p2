@@ -173,16 +173,16 @@ public class Trokos {
     }
 
     static public void showCommands() {
-        System.out.println(delim+"Comandos disponíveis:"+delim);
+        System.out.println(delim+"Comandos disponiveis:"+delim);
         System.out.println("   -balance");
-        System.out.println("      obtém valor atual do saldo da sua conta.");
+        System.out.println("      obtem valor atual do saldo da sua conta.");
         System.out.println("   -makepayment <userID> <amount>");
         System.out.println("      transferir o valor amount para a conta de userID.");
         System.out.println("   -requestpayment <userID> <amount>");
         System.out.println("      envia um pedido de pagamento ao");
         System.out.println("      utilizador userID, de valor amount");
         System.out.println("   -viewrequests");
-        System.out.println("      obtém do servidor a sua lista de pedidos");
+        System.out.println("      obtem do servidor a sua lista de pedidos");
         System.out.println("      de pagamentos pendentes");
         System.out.println("   -payrequest <reqID>");
         System.out.println("      autoriza o pagamento do pedido com");
@@ -200,7 +200,7 @@ public class Trokos {
         System.out.println("      membro do grupo indicado.");
         System.out.println("   -groups");
         System.out.println("      mostra uma lista dos grupos de que o");
-        System.out.println("      cliente é dono, e uma lista dos");
+        System.out.println("      cliente eh dono, e uma lista dos");
         System.out.println("      grupos a que pertence.");
         System.out.println("   -dividepayment <groupID> <amount>");
         System.out.println("      cria um pedido de pagamento de grupo, cujo valor");
@@ -211,8 +211,8 @@ public class Trokos {
         System.out.println("      grupo, ou seja, que membros do grupo ainda");
         System.out.println("      nao pagaram esse pedido");
         System.out.println("   -history <groupID>");
-        System.out.println("      mostra o histórico dos pagamentos do");
-        System.out.println("      grupo groupID já concluídos.");
+        System.out.println("      mostra o historico dos pagamentos do");
+        System.out.println("      grupo groupID ja concluidos.");
         System.out.println();
     }
 }
