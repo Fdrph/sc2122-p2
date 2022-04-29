@@ -27,7 +27,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.io.Serial;
+// import java.io.Serial;
 import java.io.Serializable;
 import java.net.Socket;
 
@@ -215,8 +215,16 @@ public class TrokosServer {
         try {
             Cipher cipher = makeCipher(pass, fileName, false);
             CipherInputStream cyph_in = new CipherInputStream(new FileInputStream(fileName), cipher);
-            byte[] bytes = cyph_in.readAllBytes();
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+
+            byte[] b = new byte[1024];
+            int n_byte_read;
+            while ((n_byte_read = cyph_in.read(b))>= 0) {
+                baos.write(b, 0, n_byte_read);
+            }
+            byte[] bytes = baos.toByteArray();
             cyph_in.close();
+
             String file_string = new String(bytes, StandardCharsets.UTF_8);
             if (file_string.equals("")) {return new ArrayList<String>();}
             ArrayList<String> file_lines = new ArrayList<>(Arrays.asList(file_string.split("\\|")));
@@ -1005,7 +1013,6 @@ public class TrokosServer {
 
 final class Block implements Serializable {
         
-    @Serial
     private static final long serialVersionUID = 1L;
     
     byte[] hash;
