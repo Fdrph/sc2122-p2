@@ -76,8 +76,9 @@ public class TrokosServer {
             InputStream keyStoreData = new FileInputStream(keyStorePath);
             KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
             ks.load(keyStoreData, pass_keyStore.toCharArray());
-            privK = (PrivateKey) ks.getKey("trokosserver", pass_keyStore.toCharArray());
-            Certificate cert = ks.getCertificate("trokosserver");
+            String alias = ks.aliases().nextElement();
+            privK = (PrivateKey) ks.getKey(alias, pass_keyStore.toCharArray());
+            Certificate cert = ks.getCertificate(alias);
             pubK = cert.getPublicKey();
             sig = Signature.getInstance("SHA256withRSA");
 
@@ -547,6 +548,7 @@ public class TrokosServer {
             String amount = args[2];
             Double nr = Double.parseDouble(amount);
             if (!auxUserExists(userID)) {return "ERROR: User doesn't exist";}
+            if (clientID.equals(userID)) {return "ERROR: You can't create a request for yourself!";}
 
             String uID = UUID.randomUUID().toString();
             String line = userID+":"+clientID+":"+nr.toString()+":"+ uID;

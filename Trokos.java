@@ -46,8 +46,9 @@ public class Trokos {
             InputStream keyStoreData = new FileInputStream(keyStorePath);
             KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
             ks.load(keyStoreData, pass_keyStore.toCharArray());
-            final Certificate cert = ks.getCertificate("trokosclient");
-            final PrivateKey privK = (PrivateKey) ks.getKey("trokosclient", pass_keyStore.toCharArray());
+            String alias = ks.aliases().nextElement();
+            final Certificate cert = ks.getCertificate(alias);
+            final PrivateKey privK = (PrivateKey) ks.getKey(alias, pass_keyStore.toCharArray());
             final Signature sig = Signature.getInstance("SHA256withRSA");
 
             // Establish connection
